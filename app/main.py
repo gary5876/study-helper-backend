@@ -40,6 +40,7 @@ limiter = Limiter(key_func=get_remote_address, default_limits=[f"{settings.RATE_
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up %s v%s [%s]", settings.APP_NAME, settings.APP_VERSION, settings.ENVIRONMENT)
+    logger.info("CORS allowed origins: %s", settings.ALLOWED_ORIGINS)
     await init_store(
         redis_url=settings.REDIS_URL if settings.ENVIRONMENT != "test" else None,
         tls_enabled=settings.REDIS_TLS_ENABLED,
