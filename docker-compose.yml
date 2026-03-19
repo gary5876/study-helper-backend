@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - REDIS_URL=redis://redis:6379
+      - AWS_REGION=ap-northeast-2
+      - AWS_S3_BUCKET=fundamentals-pdf-temp
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app   # hot-reload in dev
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
