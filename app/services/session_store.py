@@ -48,15 +48,11 @@ class SessionStore:
     async def connect(self, tls_enabled: bool = False):
         if _REDIS_AVAILABLE and self._redis_url:
             try:
-                ssl_context = None
+                kwargs: dict = {"decode_responses": True}
                 if tls_enabled:
                     import ssl
-                    ssl_context = ssl.create_default_context()
-                self._redis = aioredis.from_url(
-                    self._redis_url,
-                    decode_responses=True,
-                    ssl=ssl_context,
-                )
+                    kwargs["ssl"] = ssl.create_default_context()
+                self._redis = aioredis.from_url(self._redis_url, **kwargs)
                 await self._redis.ping()
                 logger.info(
                     "SessionStore: connected to Redis at %s (TLS=%s)",
