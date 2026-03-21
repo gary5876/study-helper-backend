@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 
 from app.services.session_store import SessionRecord, SessionStore, init_store, get_store
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def store():
     """Fresh in-memory store for each test."""
     s = await init_store(redis_url=None)
