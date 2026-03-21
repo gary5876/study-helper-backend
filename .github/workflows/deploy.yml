@@ -6,12 +6,14 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  AWS_REGION: ap-northeast-2
-  ECR_REPOSITORY: fundamentals-backend
-  ECS_CLUSTER: fundamentals-prod
-  ECS_SERVICE: fundamentals-backend
-  CONTAINER_NAME: fundamentals-backend
+# ── AWS 이전 시 아래 주석 해제 ──────────────────────────────
+# env:
+#   AWS_REGION: ap-northeast-2
+#   ECR_REPOSITORY: fundamentals-backend
+#   ECS_CLUSTER: fundamentals-prod
+#   ECS_SERVICE: fundamentals-backend
+#   CONTAINER_NAME: fundamentals-backend
+# ────────────────────────────────────────────────────────────
 
 jobs:
   # ──────────────────────────────────────
@@ -86,11 +88,12 @@ jobs:
 
   # ──────────────────────────────────────
   # 2. Build & Push Docker image to ECR
-  # ──────────────────────────────────────
+  # ── AWS 이전 시 if: false 제거 ─────────
   build-and-push:
     name: Build & Push
     needs: [test, security]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: false  # Railway 사용 중 — AWS 이전 시 제거하고 아래 조건으로 교체
+    # if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
 
     outputs:
@@ -124,10 +127,11 @@ jobs:
 
   # ──────────────────────────────────────
   # 3. Deploy to ECS (rolling update)
-  # ──────────────────────────────────────
+  # ── AWS 이전 시 if: false 제거 ─────────
   deploy:
     name: Deploy
     needs: build-and-push
+    if: false  # Railway 사용 중 — AWS 이전 시 제거
     runs-on: ubuntu-latest
 
     steps:
@@ -165,10 +169,10 @@ jobs:
 
   # ──────────────────────────────────────
   # 4. Rollback (manual trigger)
-  # ──────────────────────────────────────
+  # ── AWS 이전 시 if 조건 복원 ───────────
   rollback:
     name: Rollback
-    if: github.event_name == 'workflow_dispatch'
+    if: false  # Railway 사용 중 — AWS 이전 시 'github.event_name == 'workflow_dispatch'' 로 교체
     runs-on: ubuntu-latest
     environment: production
 
