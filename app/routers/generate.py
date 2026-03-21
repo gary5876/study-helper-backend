@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from typing import Optional
 
+from app.core.config import get_settings
 from app.core.exceptions import GenerationError, ValidationError
 from app.models.schemas import (
     ContentMetadata,
@@ -19,7 +20,7 @@ from app.models.schemas import (
     StatusResponse,
     StudyContent,
 )
-from app.services.anthropic_client import generate_study_content
+from app.services.anthropic_client import generate_study_content, generate_with_retry
 from app.services.prompt_builder import (
     build_fill_prompt,
     build_mcq_prompt,
@@ -29,6 +30,7 @@ from app.services.prompt_builder import (
 from app.services.response_validator import validate_fill, validate_mcq, validate_notes
 from app.services.session_store import get_store
 
+settings = get_settings()
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -70,30 +72,6 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
 
     # Build prompts
     sys_notes, prompt_notes = build_notes_prompt(full_text)
-
-    def _progress(pct: int, stage: str):
-        asyncio.create_task(
-            store.update_status(session_id, "processing", progress_pct=pct)
-        )
-
-    try:
-        notes_raw, mcq_raw, fill_raw = await generate_study_content(
-            api_key=api_key,
-            system_notes=sys_notes,
-            prompt_notes=prompt_notes,
-            system_mcq="",   # rebuilt after notes
-            prompt_mcq="",   # rebuilt after notes
-            system_fill="",  # rebuilt after notes
-            prompt_fill="",  # rebuilt after notes
-            progress_callback=None,
-        )
-    except GenerationError as exc:
-        await store.update_status(session_id, "failed", error_message=exc.message)
-        return
-
-    # Actually: we need notes first to build MCQ/fill prompts — rebuild properly
-    # The above call used empty prompts for mcq/fill; redo correctly:
-    from app.services.anthropic_client import generate_with_retry
 
     await store.update_status(session_id, "processing", progress_pct=10)
 
@@ -154,7 +132,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
             page_count=record.page_count,
             word_count=record.word_count,
             generated_at=datetime.now(timezone.utc).isoformat(),
-            model_used="claude-sonnet-4-6",
+            model_used=settings.ANTHROPIC_MODEL,
             section_count=section_count,
         ),
     )

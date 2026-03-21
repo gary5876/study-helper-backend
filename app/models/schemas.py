@@ -116,7 +116,7 @@ class GenerateResponse(BaseModel):
 
 class StatusResponse(BaseModel):
     session_id: str
-    status: Literal["processing", "complete", "failed"]
+    status: Literal["uploaded", "processing", "complete", "failed"]
     progress_pct: int
     error_message: Optional[str] = None
 
