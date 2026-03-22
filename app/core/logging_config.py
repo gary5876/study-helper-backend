@@ -74,3 +74,4 @@ def configure_logging() -> None:
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("botocore").setLevel(logging.WARNING)
     logging.getLogger("boto3").setLevel(logging.WARNING)
+    logging.getLogger("pdfminer").setLevel(logging.WARNING)
