@@ -146,6 +146,6 @@ DOCUMENT:
 
 def calculate_question_counts(section_count: int) -> tuple[int, int]:
     """Return (mcq_count, fill_count) based on document size."""
-    mcq = max(10, min(30, section_count * 3))
-    fill = max(8, min(20, section_count * 2))
+    mcq = max(10, min(20, section_count * 3))
+    fill = max(6, min(15, section_count * 2))
     return mcq, fill

@@ -95,7 +95,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     # MCQ
     sys_mcq, prompt_mcq = build_mcq_prompt(full_text, notes_dict, mcq_count)
     try:
-        mcq_raw = await generate_with_retry(api_key, sys_mcq, prompt_mcq, max_tokens=4096)
+        mcq_raw = await generate_with_retry(api_key, sys_mcq, prompt_mcq, max_tokens=8192)
     except GenerationError as exc:
         await store.update_status(session_id, "failed", error_message=f"MCQ generation failed: {exc.message}")
         return
