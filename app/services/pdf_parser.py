@@ -149,8 +149,9 @@ def parse_pdf(file_bytes: bytes, filename: str = "document.pdf") -> ParsedDocume
     except Exception as exc:
         raise PDFParseError(f"Cannot open PDF: {exc}", status_code=400) from exc
 
-    # Password-protected check
-    if pdf.doc.is_encrypted:  # type: ignore[attr-defined]
+    # Password-protected check (pdfminer renamed is_encrypted → encryption)
+    _encrypted = getattr(pdf.doc, 'is_encrypted', None) or bool(getattr(pdf.doc, 'encryption', None))
+    if _encrypted:
         raise PDFParseError(
             "PDF is password-protected. Please provide an unlocked file.", status_code=400
         )
