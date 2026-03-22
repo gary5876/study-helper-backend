@@ -108,9 +108,14 @@ async def _call_claude(
             status_code=429,
         ) from exc
     except anthropic.APIStatusError as exc:
+        if exc.status_code == 400 and "credit" in str(exc.message).lower():
+            raise GenerationError(
+                "서비스에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                status_code=503,
+            ) from exc
         _circuit_breaker.record_failure()
         raise GenerationError(
-            f"Anthropic API error: {exc.message}",
+            "서비스에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해주세요.",
             status_code=502,
         ) from exc
     except anthropic.APITimeoutError as exc:
@@ -169,8 +174,8 @@ async def generate_with_retry(
             raw = await _call_claude(api_key, system_prompt, user_prompt, max_tokens)
             return _extract_json(raw)
         except GenerationError as exc:
-            # Auth / rate limit errors should not be retried
-            if exc.status_code in (401, 429):
+            # Auth / rate limit / service errors should not be retried
+            if exc.status_code in (401, 429, 503):
                 raise
             last_error = exc
             if attempt < retries:
