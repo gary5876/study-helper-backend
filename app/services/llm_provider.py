@@ -1,9 +1,10 @@
-"""Google Gemini client with key-pool round-robin and rate-limit cooldown."""
+"""Google Gemini client with key-pool round-robin, Retry-After, and per-key exponential backoff."""
 from __future__ import annotations
 
 import asyncio
 import logging
 import math
+import re
 import threading
 import time
 from typing import Callable
@@ -17,7 +18,10 @@ from app.services.json_utils import extract_json
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-_COOLDOWN_SECONDS = 60
+_COOLDOWN_BASE_SECONDS = 15   # 첫 번째 rate-limit: 15초
+_COOLDOWN_MAX_SECONDS = 60    # 키당 최대 쿨다운
+_COOLDOWN_MULTIPLIER = 2      # 연속 hit마다 2배 (15 → 30 → 60)
+_ALL_KEYS_MAX_WAIT = 30       # 모든 키 쿨다운 시 최대 대기 시간 (초)
 
 # Batch sizes chosen so each batch fits comfortably within 4096 / 2048 output tokens
 MCQ_BATCH_SIZE = 5   # ~400 tokens/question × 5 ≈ 2000 tokens
@@ -29,7 +33,15 @@ FILL_BATCH_SIZE = 8  # ~200 tokens/question × 8 ≈ 1600 tokens
 # ─────────────────────────────────────────
 
 class GeminiKeyPool:
-    """Thread-safe round-robin key pool with per-key cooldown on rate limit."""
+    """Thread-safe round-robin key pool with Retry-After + per-key exponential backoff.
+
+    쿨다운 전략:
+    - Retry-After 헤더 값이 있으면 그 값을 우선 사용 (최대 _COOLDOWN_MAX_SECONDS)
+    - 없으면 연속 rate-limit 횟수에 따라 지수 백오프: 15s → 30s → 60s (cap)
+    - 성공 시 해당 키의 백오프 카운터 리셋
+    - 모든 키가 쿨다운이면 가장 빨리 풀리는 키까지 대기 후 재시도
+      (_ALL_KEYS_MAX_WAIT 이내일 때만, 초과 시 즉시 에러 반환)
+    """
 
     def __init__(self, keys: list[str]):
         if not keys:
@@ -40,6 +52,7 @@ class GeminiKeyPool:
         self._keys = keys
         self._index = 0
         self._cooldown_until: dict[str, float] = {}
+        self._backoff_factor: dict[str, int] = {}  # 키별 연속 rate-limit 횟수
         self._lock = threading.Lock()
 
     def get_key(self) -> str:
@@ -55,11 +68,37 @@ class GeminiKeyPool:
                 status_code=429,
             )
 
-    def mark_rate_limited(self, key: str) -> None:
+    def mark_rate_limited(self, key: str, retry_after: float | None = None) -> float:
+        """키를 쿨다운 상태로 표시. 실제 적용된 쿨다운 초를 반환."""
         with self._lock:
-            self._cooldown_until[key] = time.monotonic() + _COOLDOWN_SECONDS
+            factor = self._backoff_factor.get(key, 0)
+            if retry_after is not None:
+                cooldown = min(retry_after, _COOLDOWN_MAX_SECONDS)
+            else:
+                cooldown = min(
+                    _COOLDOWN_BASE_SECONDS * (_COOLDOWN_MULTIPLIER ** factor),
+                    _COOLDOWN_MAX_SECONDS,
+                )
+            self._backoff_factor[key] = factor + 1
+            self._cooldown_until[key] = time.monotonic() + cooldown
             logger.warning(
-                "Gemini key ...%s rate-limited, cooling down for %ds", key[-6:], _COOLDOWN_SECONDS
+                "Gemini key ...%s rate-limited (hit #%d), cooling down for %.0fs",
+                key[-6:], factor + 1, cooldown,
+            )
+            return cooldown
+
+    def mark_success(self, key: str) -> None:
+        """성공 시 해당 키의 지수 백오프 카운터를 리셋."""
+        with self._lock:
+            self._backoff_factor.pop(key, None)
+
+    def soonest_available_seconds(self) -> float:
+        """가장 빨리 쿨다운이 풀리는 키까지 남은 초 (이미 사용 가능한 키가 있으면 0)."""
+        with self._lock:
+            now = time.monotonic()
+            return min(
+                max(0.0, self._cooldown_until.get(k, 0) - now)
+                for k in self._keys
             )
 
 
@@ -80,8 +119,23 @@ def get_key_pool() -> GeminiKeyPool:
 # ─────────────────────────────────────────
 
 class _RateLimitError(Exception):
-    def __init__(self, key: str):
+    def __init__(self, key: str, retry_after: float | None = None):
         self.key = key
+        self.retry_after = retry_after
+
+
+def _extract_retry_after(exc: Exception) -> float | None:
+    """예외 메시지에서 retry-after 초를 파싱. 없으면 None."""
+    msg = str(exc)
+    # "retryDelay": "30s" 형태 (Gemini REST 응답 본문)
+    match = re.search(r'retryDelay["\s:]+(\d+)', msg, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    # "retry after 30 seconds" / "retry_after: 30" 형태
+    match = re.search(r'retry[_\s-]?after[:\s]+(\d+)', msg, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    return None
 
 
 async def _call_gemini(key: str, system_prompt: str, user_prompt: str, max_tokens: int) -> str:
@@ -121,7 +175,7 @@ async def _call_gemini(key: str, system_prompt: str, user_prompt: str, max_token
     except Exception as exc:
         msg = str(exc).lower()
         if "quota" in msg or "rate" in msg or "429" in msg:
-            raise _RateLimitError(key) from exc
+            raise _RateLimitError(key, _extract_retry_after(exc)) from exc
         raise GenerationError(
             "서비스에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해주세요.",
             status_code=502,
@@ -133,9 +187,17 @@ async def _call_gemini(key: str, system_prompt: str, user_prompt: str, max_token
 # ─────────────────────────────────────────
 
 async def _gemini_generate(system_prompt: str, user_prompt: str, max_tokens: int) -> dict:
-    """Try available keys in round-robin; fall back on rate limit."""
+    """Try available keys in round-robin; fall back on rate limit.
+
+    쿨다운 전략 (우선순위 순):
+    1. Retry-After 헤더 값이 있으면 그 값을 쿨다운에 사용
+    2. 없으면 키별 지수 백오프 (15s → 30s → 60s cap), 성공 시 리셋
+    3. 모든 키가 쿨다운이면 가장 빨리 풀리는 키까지 대기 후 1회 재시도
+       (_ALL_KEYS_MAX_WAIT 초 초과 시 즉시 에러 반환)
+    """
     pool = get_key_pool()
     last_error: Exception | None = None
+
     for _ in range(len(settings.gemini_keys_list) + 1):
         try:
             key = pool.get_key()
@@ -143,13 +205,30 @@ async def _gemini_generate(system_prompt: str, user_prompt: str, max_tokens: int
             break
         try:
             raw = await _call_gemini(key, system_prompt, user_prompt, max_tokens)
+            pool.mark_success(key)
             return extract_json(raw)
         except _RateLimitError as exc:
-            pool.mark_rate_limited(exc.key)
+            pool.mark_rate_limited(exc.key, exc.retry_after)
             last_error = exc
         except GenerationError as exc:
             last_error = exc
             break
+
+    # 모든 키 소진 — 즉시 에러 대신 가장 빨리 풀리는 키까지 대기 후 재시도
+    wait_seconds = pool.soonest_available_seconds()
+    if 0 < wait_seconds <= _ALL_KEYS_MAX_WAIT:
+        logger.warning(
+            "All Gemini keys cooling down. Waiting %.0fs for soonest-available key.", wait_seconds
+        )
+        await asyncio.sleep(wait_seconds + 0.5)  # 0.5초 여유
+        try:
+            key = pool.get_key()
+            raw = await _call_gemini(key, system_prompt, user_prompt, max_tokens)
+            pool.mark_success(key)
+            return extract_json(raw)
+        except Exception as exc:
+            last_error = exc
+
     raise GenerationError(
         f"Gemini 콘텐츠 생성에 실패했습니다: {last_error}",
         status_code=502,
