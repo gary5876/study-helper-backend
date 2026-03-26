@@ -100,6 +100,7 @@ class UploadResponse(BaseModel):
 
 class GenerateRequest(BaseModel):
     session_id: str
+    plan: Literal["free", "paid"] = "paid"
     api_key: Optional[str] = None  # kept for backwards-compat; prefer X-API-Key header
     options: Optional[GenerateOptions] = None
 

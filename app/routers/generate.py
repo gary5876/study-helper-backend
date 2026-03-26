@@ -1,7 +1,6 @@
 """POST /generate, GET /status, GET /result, DELETE /session endpoints."""
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -20,7 +19,8 @@ from app.models.schemas import (
     StatusResponse,
     StudyContent,
 )
-from app.services.anthropic_client import generate_study_content, generate_with_retry
+from app.services.anthropic_client import generate_with_retry
+from app.services.llm_provider import GeminiClient
 from app.services.prompt_builder import (
     build_fill_prompt,
     build_mcq_prompt,
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _run_generation(session_id: str, api_key: str, options: GenerateOptions | None):
+async def _run_generation(session_id: str, api_key: str, options: GenerateOptions | None, plan: str = "paid"):
     """Background task: run the full generation pipeline and persist result."""
     store = get_store()
 
@@ -72,18 +72,24 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
 
     # Build prompts
     sys_notes, prompt_notes = build_notes_prompt(full_text)
-
     await store.update_status(session_id, "processing", progress_pct=10)
 
+    # ── Stage 1: Notes generation ──────────────────────────────────────
+    if plan == "free":
+        gemini = GeminiClient()
+
     try:
-        notes_raw = await generate_with_retry(api_key, sys_notes, prompt_notes, max_tokens=4096)
+        if plan == "free":
+            notes_raw = await gemini.generate_notes(sys_notes, prompt_notes)
+        else:
+            notes_raw = await generate_with_retry(api_key, sys_notes, prompt_notes, max_tokens=4096)
     except GenerationError as exc:
         await store.update_status(session_id, "failed", error_message=f"Notes generation failed: {exc.message}")
         return
 
     await store.update_status(session_id, "processing", progress_pct=40)
 
-    # Validate notes first to get concept IDs for MCQ/fill
+    # Validate notes to get concept IDs for MCQ/fill prompts
     try:
         notes_obj = validate_notes(notes_raw, full_text)
     except ValidationError as exc:
@@ -92,23 +98,39 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
 
     notes_dict = notes_raw  # keep raw dict for prompt context
 
-    # MCQ
-    sys_mcq, prompt_mcq = build_mcq_prompt(full_text, notes_dict, mcq_count)
-    try:
-        mcq_raw = await generate_with_retry(api_key, sys_mcq, prompt_mcq, max_tokens=8192)
-    except GenerationError as exc:
-        await store.update_status(session_id, "failed", error_message=f"MCQ generation failed: {exc.message}")
-        return
+    # ── Stage 2: MCQ generation ─────────────────────────────────────────
+    if plan == "free":
+        # Batched: MCQ_BATCH_SIZE questions per call to stay within Gemini output limits.
+        # Notes are complete here, so concept IDs are correctly populated.
+        try:
+            mcq_raw = await gemini.generate_mcq_batched(full_text, notes_dict, mcq_count)
+        except GenerationError as exc:
+            await store.update_status(session_id, "failed", error_message=f"MCQ generation failed: {exc.message}")
+            return
+    else:
+        sys_mcq, prompt_mcq = build_mcq_prompt(full_text, notes_dict, mcq_count)
+        try:
+            mcq_raw = await generate_with_retry(api_key, sys_mcq, prompt_mcq, max_tokens=8192)
+        except GenerationError as exc:
+            await store.update_status(session_id, "failed", error_message=f"MCQ generation failed: {exc.message}")
+            return
 
     await store.update_status(session_id, "processing", progress_pct=70)
 
-    # Fill
-    sys_fill, prompt_fill = build_fill_prompt(full_text, notes_dict, fill_count)
-    try:
-        fill_raw = await generate_with_retry(api_key, sys_fill, prompt_fill, max_tokens=2048)
-    except GenerationError as exc:
-        await store.update_status(session_id, "failed", error_message=f"Fill generation failed: {exc.message}")
-        return
+    # ── Stage 3: Fill-in-blank generation ──────────────────────────────
+    if plan == "free":
+        try:
+            fill_raw = await gemini.generate_fill_batched(full_text, notes_dict, fill_count)
+        except GenerationError as exc:
+            await store.update_status(session_id, "failed", error_message=f"Fill generation failed: {exc.message}")
+            return
+    else:
+        sys_fill, prompt_fill = build_fill_prompt(full_text, notes_dict, fill_count)
+        try:
+            fill_raw = await generate_with_retry(api_key, sys_fill, prompt_fill, max_tokens=2048)
+        except GenerationError as exc:
+            await store.update_status(session_id, "failed", error_message=f"Fill generation failed: {exc.message}")
+            return
 
     await store.update_status(session_id, "processing", progress_pct=85)
 
@@ -132,7 +154,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
             page_count=record.page_count,
             word_count=record.word_count,
             generated_at=datetime.now(timezone.utc).isoformat(),
-            model_used=settings.ANTHROPIC_MODEL,
+            model_used=settings.GEMINI_MODEL if plan == "free" else settings.ANTHROPIC_MODEL,
             section_count=section_count,
         ),
     )
@@ -161,7 +183,7 @@ async def start_generation(
     Pass the Anthropic API key via the `X-API-Key` header (preferred) or the `api_key` body field.
     """
     resolved_key = (x_api_key or body.api_key or "").strip()
-    if not resolved_key or len(resolved_key) < 10:
+    if body.plan == "paid" and (not resolved_key or len(resolved_key) < 10):
         raise HTTPException(status_code=400, detail="A valid Anthropic API key is required.")
 
     store = get_store()
@@ -173,7 +195,7 @@ async def start_generation(
     if record.status == "processing":
         return GenerateResponse(session_id=body.session_id, status="processing")
 
-    background_tasks.add_task(_run_generation, body.session_id, resolved_key, body.options)
+    background_tasks.add_task(_run_generation, body.session_id, resolved_key, body.options, body.plan)
     return GenerateResponse(session_id=body.session_id, status="processing")
 
 

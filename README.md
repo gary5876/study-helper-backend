@@ -1,15 +1,18 @@
 # Study Helper — Backend API
 
-FastAPI 백엔드. PDF를 받아 Anthropic Claude로 학습 콘텐츠(노트 · MCQ · 빈칸 채우기)를 생성합니다.
+FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude 유료 / Google Gemini 무료)로 학습 콘텐츠(노트 · MCQ · 빈칸 채우기)를 생성합니다.
 
 ---
 
-## 현재 상태 (2026-03-22)
+## 현재 상태 (2026-03-24)
 
 ### 완성된 기능
 
 - [x] PDF 업로드 + pdfplumber 파싱 (최대 50페이지 / 20MB)
-- [x] 3단계 비동기 콘텐츠 생성 (학습 노트 → MCQ → 빈칸 채우기)
+- [x] **무료 플랜** — Google Gemini 2.0 Flash (키 풀 라운드로빈 + Rate Limit 60초 쿨다운)
+- [x] **유료 플랜** — Anthropic Claude Sonnet (서킷 브레이커 + 지수 백오프 재시도)
+- [x] 3단계 비동기 콘텐츠 생성 파이프라인 (Notes → MCQ 배치 → Fill 배치)
+- [x] Gemini MCQ/Fill 배치 분할 생성 (MCQ 5개/배치, Fill 8개/배치 — 토큰 한도 대응)
 - [x] 진행률 폴링 (`/status`, 0~100%)
 - [x] Redis / 인메모리 세션 스토어 (2시간 TTL)
 - [x] 응답 검증 (중복 제거, 환각 탐지, 필드 보정)
@@ -27,7 +30,9 @@ FastAPI 백엔드. PDF를 받아 Anthropic Claude로 학습 콘텐츠(노트 · 
 
 ```
 POST /upload   → pdfplumber 파싱 → 세션 스토어 (Redis / 인메모리)
-POST /generate → 3단계 Anthropic 파이프라인 → 검증 → 세션 스토어
+POST /generate → plan 기반 분기 → 3단계 파이프라인 → 검증 → 세션 스토어
+                  ├─ free  → GeminiClient (키 풀, 배치 분할)
+                  └─ paid  → AnthropicClient (서킷 브레이커)
 GET  /status   → 생성 진행률 폴링 (0~100%)
 GET  /result   → 완성된 StudyContent JSON 반환
 DELETE /session → 세션 및 데이터 정리
@@ -51,6 +56,8 @@ app/
 ├── services/
 │   ├── pdf_parser.py          # PDF 텍스트 추출 + 섹션 감지
 │   ├── anthropic_client.py    # Claude API 래퍼 (재시도 + 서킷 브레이커)
+│   ├── llm_provider.py        # Gemini 키 풀 + 배치 생성 클라이언트
+│   ├── json_utils.py          # JSON 추출 + 부분 복구 공유 유틸리티
 │   ├── prompt_builder.py      # 프롬프트 템플릿 생성
 │   ├── response_validator.py  # LLM 출력 검증 + 정제
 │   └── session_store.py       # Redis/인메모리 세션 관리
@@ -65,19 +72,24 @@ app/
 POST /generate 수신
   └─▶ 백그라운드 태스크 시작
         │
-        ├─ [1단계] 학습 노트 생성 (progress 5% → 40%)
-        │    └─▶ build_notes_prompt() → Claude API (4096 tokens max)
-        │    └─▶ validate_notes() → StudyNotes 객체
+        ├─ [Stage 1] 학습 노트 생성 (progress 5% → 40%)
+        │    ├─ free: GeminiClient.generate_notes() (4096 tokens)
+        │    └─ paid: AnthropicClient.generate_with_retry() (4096 tokens)
+        │    └─▶ validate_notes() → StudyNotes 객체 + notes_dict(concept_id 맵)
         │
-        ├─ [2단계] MCQ 생성 (progress 40% → 80%)
-        │    └─▶ build_mcq_prompt(notes) → Claude API (8192 tokens max)
+        ├─ [Stage 2] MCQ 배치 생성 (progress 40% → 80%)
+        │    ├─ free: GeminiClient.generate_mcq_batched() (5개/배치, 최대 4회 순차 호출)
+        │    └─ paid: AnthropicClient.generate_with_retry() (8192 tokens, 1회)
         │    └─▶ validate_mcq() → 중복/환각 제거 후 MCQQuestion 목록
         │
-        └─ [3단계] 빈칸 채우기 생성 (progress 80% → 100%)
-             └─▶ build_fill_prompt(notes) → Claude API (2048 tokens max)
+        └─ [Stage 3] 빈칸 채우기 배치 생성 (progress 80% → 100%)
+             ├─ free: GeminiClient.generate_fill_batched() (8개/배치, 최대 2회 순차 호출)
+             └─ paid: AnthropicClient.generate_with_retry() (2048 tokens, 1회)
              └─▶ validate_fill() → FillQuestion 목록
              └─▶ StudyContent JSON → 세션 스토어 저장
 ```
+
+> **Gemini 배치 중복 방지**: 각 배치 프롬프트에 이전 배치의 question/answer 텍스트를 주입해 중복을 1차 방지하고, validate_mcq의 Jaccard 70% 유사도 필터로 2차 제거합니다.
 
 ### 문제 수 자동 계산 (`calculate_question_counts`)
 
@@ -116,14 +128,22 @@ StudyContent
 
 PDF 파일을 업로드합니다. 이후 `/generate` 호출에 사용할 `session_id`를 반환합니다.
 
-**API 키 전달 방법:**
-- `X-API-Key` 헤더 (권장)
-- `api_key` Form 필드 (하위 호환)
+**파라미터:**
+- `file` Form 필드: 업로드할 PDF 파일
+- `plan` Form 필드: `"free"` 또는 `"paid"` (기본값: `"paid"`)
+- `X-API-Key` 헤더 또는 `api_key` Form 필드: 유료 플랜만 필요
 
 ```bash
+# 유료 플랜
 curl -X POST http://localhost:8000/upload \
   -H "X-API-Key: sk-ant-..." \
-  -F "file=@document.pdf"
+  -F "file=@document.pdf" \
+  -F "plan=paid"
+
+# 무료 플랜 (API 키 불필요)
+curl -X POST http://localhost:8000/upload \
+  -F "file=@document.pdf" \
+  -F "plan=free"
 ```
 
 Response:
@@ -141,11 +161,21 @@ Response:
 
 비동기 콘텐츠 생성을 시작합니다. 즉시 `status: "processing"` 반환 후 백그라운드 실행.
 
+**Request Body:**
+- `session_id` (필수): `/upload`에서 받은 세션 ID
+- `plan` (선택): `"free"` 또는 `"paid"` (기본값: `"paid"`)
+
 ```bash
+# 유료 플랜
 curl -X POST http://localhost:8000/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: sk-ant-..." \
-  -d '{"session_id": "uuid"}'
+  -d '{"session_id": "uuid", "plan": "paid"}'
+
+# 무료 플랜 (API 키 불필요)
+curl -X POST http://localhost:8000/generate \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "uuid", "plan": "free"}'
 ```
 
 ### GET /status/{session_id}
@@ -241,18 +271,34 @@ uvicorn app.main:app --reload
 
 ## Configuration
 
+### Anthropic (유료 플랜)
+
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `ENVIRONMENT` | `development` | `development` / `production` |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | 사용할 Claude 모델 |
 | `ANTHROPIC_TIMEOUT` | `30` | Anthropic API 타임아웃 (초) |
+| `MAX_RETRIES` | `2` | Anthropic API 재시도 횟수 |
+
+### Google Gemini (무료 플랜)
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `GEMINI_API_KEYS` | *(필수)* | 쉼표 구분 Gemini API 키 목록 (`키1,키2,키3`) |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | 사용할 Gemini 모델 |
+| `GEMINI_TIMEOUT` | `60` | Gemini API 타임아웃 (초) |
+
+
+### 공통
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
 | `ALLOWED_ORIGINS` | `["http://localhost:3000","http://localhost:8081"]` | CORS 허용 출처 |
 | `REDIS_URL` | `redis://localhost:6379` | Redis 연결 URL |
 | `REDIS_TLS_ENABLED` | `false` | Redis TLS 활성화 |
 | `RATE_LIMIT_PER_MINUTE` | `30` | IP당 분당 최대 요청 수 |
 | `MAX_PDF_PAGES` | `50` | 처리할 최대 PDF 페이지 수 |
 | `MAX_PDF_SIZE_MB` | `20` | 최대 업로드 파일 크기 |
-| `MAX_RETRIES` | `2` | Anthropic API 재시도 횟수 |
 
 ---
 
@@ -293,7 +339,8 @@ pytest tests/integration/ -v
 
 - **CORS**: `ALLOWED_ORIGINS` 환경변수로 허용 출처 제한 (기본: localhost만)
 - **Rate Limiting**: IP당 분당 30회 (slowapi)
-- **API 키**: 서버에 저장하지 않음 — `X-API-Key` 헤더로 전달 후 Anthropic에 포워딩
+- **API 키 (유료)**: 서버에 저장하지 않음 — `X-API-Key` 헤더로 전달 후 Anthropic에 포워딩
+- **Gemini 키 (무료)**: 서버 환경변수로만 관리, 클라이언트에 노출되지 않음
 - **서킷 브레이커**: 5회 연속 실패 시 60초 Anthropic API 차단
 - **비루트 컨테이너**: Dockerfile에서 `appuser`로 실행
 - **Redis TLS**: `REDIS_TLS_ENABLED=true`로 활성화 (`rediss://` URL 사용)

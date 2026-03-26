@@ -29,15 +29,16 @@ async def upload_pdf(
     file: UploadFile = File(...),
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
     api_key: Optional[str] = Form(default=None),  # kept for backwards-compat
+    plan: str = Form(default="paid"),
 ):
     """
     Upload a PDF file. Returns a session_id for subsequent /generate calls.
 
     Pass the Anthropic API key via the `X-API-Key` header (preferred) or the `api_key` form field.
-    The key is validated for length only — it is forwarded to Anthropic when /generate is called.
+    Free plan users do not need to provide an API key.
     """
     resolved_key = (x_api_key or api_key or "").strip()
-    if not resolved_key or len(resolved_key) < 10:
+    if plan == "paid" and (not resolved_key or len(resolved_key) < 10):
         raise HTTPException(status_code=400, detail="A valid Anthropic API key is required.")
     api_key = resolved_key
 
