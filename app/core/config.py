@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.0-flash"
     GEMINI_TIMEOUT: int = 60
 
+    # OpenAI (gpt plan)
+    OPENAI_MODEL: str = "gpt-4o-mini"
+    OPENAI_TIMEOUT: int = 60
+
+    # TimelyGPT (timely plan) — https://timelygpt.co.kr
+    TIMELY_MODEL: str = "gpt-4.1"
+    TIMELY_TIMEOUT: int = 60
+
     @property
     def gemini_keys_list(self) -> list[str]:
         return [k.strip() for k in self.GEMINI_API_KEYS.split(",") if k.strip()]

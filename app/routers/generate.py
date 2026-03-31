@@ -19,7 +19,9 @@ from app.models.schemas import (
     StatusResponse,
     StudyContent,
 )
-from app.services.anthropic_client import generate_with_retry
+from app.services.anthropic_client import generate_with_retry as anthropic_generate
+from app.services.openai_client import generate_with_retry as openai_generate
+from app.services.timely_client import generate_with_retry as timely_generate
 from app.services.llm_provider import GeminiClient
 from app.services.prompt_builder import (
     build_fill_prompt,
@@ -81,8 +83,12 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     try:
         if plan == "free":
             notes_raw = await gemini.generate_notes(sys_notes, prompt_notes)
+        elif plan == "gpt":
+            notes_raw = await openai_generate(api_key, sys_notes, prompt_notes, max_tokens=4096)
+        elif plan == "timely":
+            notes_raw = await timely_generate(api_key, sys_notes, prompt_notes, max_tokens=4096)
         else:
-            notes_raw = await generate_with_retry(api_key, sys_notes, prompt_notes, max_tokens=4096)
+            notes_raw = await anthropic_generate(api_key, sys_notes, prompt_notes, max_tokens=4096)
     except GenerationError as exc:
         await store.update_status(session_id, "failed", error_message=f"Notes generation failed: {exc.message}")
         return
@@ -110,7 +116,12 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     else:
         sys_mcq, prompt_mcq = build_mcq_prompt(full_text, notes_dict, mcq_count)
         try:
-            mcq_raw = await generate_with_retry(api_key, sys_mcq, prompt_mcq, max_tokens=8192)
+            if plan == "gpt":
+                mcq_raw = await openai_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192)
+            elif plan == "timely":
+                mcq_raw = await timely_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192)
+            else:
+                mcq_raw = await anthropic_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192)
         except GenerationError as exc:
             await store.update_status(session_id, "failed", error_message=f"MCQ generation failed: {exc.message}")
             return
@@ -127,7 +138,12 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     else:
         sys_fill, prompt_fill = build_fill_prompt(full_text, notes_dict, fill_count)
         try:
-            fill_raw = await generate_with_retry(api_key, sys_fill, prompt_fill, max_tokens=2048)
+            if plan == "gpt":
+                fill_raw = await openai_generate(api_key, sys_fill, prompt_fill, max_tokens=2048)
+            elif plan == "timely":
+                fill_raw = await timely_generate(api_key, sys_fill, prompt_fill, max_tokens=2048)
+            else:
+                fill_raw = await anthropic_generate(api_key, sys_fill, prompt_fill, max_tokens=2048)
         except GenerationError as exc:
             await store.update_status(session_id, "failed", error_message=f"Fill generation failed: {exc.message}")
             return
@@ -154,7 +170,12 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
             page_count=record.page_count,
             word_count=record.word_count,
             generated_at=datetime.now(timezone.utc).isoformat(),
-            model_used=settings.GEMINI_MODEL if plan == "free" else settings.ANTHROPIC_MODEL,
+            model_used=(
+                settings.GEMINI_MODEL if plan == "free"
+                else settings.OPENAI_MODEL if plan == "gpt"
+                else settings.TIMELY_MODEL if plan == "timely"
+                else settings.ANTHROPIC_MODEL
+            ),
             section_count=section_count,
         ),
     )
@@ -185,6 +206,10 @@ async def start_generation(
     resolved_key = (x_api_key or body.api_key or "").strip()
     if body.plan == "paid" and (not resolved_key or len(resolved_key) < 10):
         raise HTTPException(status_code=400, detail="A valid Anthropic API key is required.")
+    if body.plan == "gpt" and (not resolved_key or len(resolved_key) < 10):
+        raise HTTPException(status_code=400, detail="A valid OpenAI API key is required.")
+    if body.plan == "timely" and (not resolved_key or len(resolved_key) < 10):
+        raise HTTPException(status_code=400, detail="A valid TimelyGPT API key is required.")
 
     store = get_store()
     record = await store.get(body.session_id)
