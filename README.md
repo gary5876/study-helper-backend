@@ -182,7 +182,7 @@ Response:
 | `free` | Google Gemini 2.0 Flash | 불필요 |
 | `paid` | Anthropic Claude Sonnet | `sk-ant-...` |
 | `gpt` | OpenAI GPT-4o-mini | `sk-...` |
-| `timely` | TimelyGPT (50+ 모델) | `sdk_live_...` |
+| `timely` | TimelyGPT (50+ 모델) | timelygpt.co.kr 발급 키 |
 
 ```bash
 # 무료 플랜 (API 키 불필요)
@@ -205,7 +205,7 @@ curl -X POST http://localhost:8000/generate \
 # TimelyGPT 플랜
 curl -X POST http://localhost:8000/generate \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: sdk_live_..." \
+  -H "X-API-Key: <timely-api-key>" \
   -d '{"session_id": "uuid", "plan": "timely"}'
 ```
 
