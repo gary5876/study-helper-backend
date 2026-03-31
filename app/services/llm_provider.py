@@ -21,7 +21,8 @@ settings = get_settings()
 _COOLDOWN_BASE_SECONDS = 15   # 첫 번째 rate-limit: 15초
 _COOLDOWN_MAX_SECONDS = 60    # 키당 최대 쿨다운
 _COOLDOWN_MULTIPLIER = 2      # 연속 hit마다 2배 (15 → 30 → 60)
-_ALL_KEYS_MAX_WAIT = 30       # 모든 키 쿨다운 시 최대 대기 시간 (초)
+_ALL_KEYS_MAX_WAIT = 120      # 모든 키 쿨다운 시 최대 대기 시간 (초)
+_ALL_KEYS_MAX_RETRIES = 4     # 쿨다운 대기 후 재시도 최대 횟수
 
 # Batch sizes chosen so each batch fits comfortably within 4096 / 2048 output tokens
 MCQ_BATCH_SIZE = 5   # ~400 tokens/question × 5 ≈ 2000 tokens
@@ -214,20 +215,26 @@ async def _gemini_generate(system_prompt: str, user_prompt: str, max_tokens: int
             last_error = exc
             break
 
-    # 모든 키 소진 — 즉시 에러 대신 가장 빨리 풀리는 키까지 대기 후 재시도
-    wait_seconds = pool.soonest_available_seconds()
-    if 0 < wait_seconds <= _ALL_KEYS_MAX_WAIT:
+    # 모든 키 소진 — 가장 빨리 풀리는 키까지 대기 후 재시도 (최대 _ALL_KEYS_MAX_RETRIES회)
+    for _ in range(_ALL_KEYS_MAX_RETRIES):
+        wait_seconds = pool.soonest_available_seconds()
+        if wait_seconds <= 0 or wait_seconds > _ALL_KEYS_MAX_WAIT:
+            break
         logger.warning(
             "All Gemini keys cooling down. Waiting %.0fs for soonest-available key.", wait_seconds
         )
-        await asyncio.sleep(wait_seconds + 0.5)  # 0.5초 여유
+        await asyncio.sleep(wait_seconds + 0.5)
         try:
             key = pool.get_key()
             raw = await _call_gemini(key, system_prompt, user_prompt, max_tokens)
             pool.mark_success(key)
             return extract_json(raw)
-        except Exception as exc:
+        except _RateLimitError as exc:
+            pool.mark_rate_limited(exc.key, exc.retry_after)
             last_error = exc
+        except GenerationError as exc:
+            last_error = exc
+            break
 
     raise GenerationError(
         f"Gemini 콘텐츠 생성에 실패했습니다: {last_error}",
