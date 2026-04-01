@@ -184,11 +184,17 @@ Response:
 | `gpt` | OpenAI GPT-4o-mini | `sk-...` |
 | `timely` | TimelyGPT (50+ 모델) | timelygpt.co.kr 발급 키 |
 
+| 필드 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `session_id` | string | 필수 | 업로드 세션 ID |
+| `plan` | string | `"paid"` | `free` / `paid` / `gpt` / `timely` |
+| `lang` | string | `"ko"` | `ko` (한국어) / `en` (영어) — 생성 콘텐츠 언어 |
+
 ```bash
 # 무료 플랜 (API 키 불필요)
 curl -X POST http://localhost:8000/generate \
   -H "Content-Type: application/json" \
-  -d '{"session_id": "uuid", "plan": "free"}'
+  -d '{"session_id": "uuid", "plan": "free", "lang": "ko"}'
 
 # Anthropic 유료 플랜
 curl -X POST http://localhost:8000/generate \
