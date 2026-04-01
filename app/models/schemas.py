@@ -103,6 +103,7 @@ class GenerateRequest(BaseModel):
     plan: Literal["free", "paid", "gpt", "timely"] = "paid"
     api_key: Optional[str] = None  # kept for backwards-compat; prefer X-API-Key header
     options: Optional[GenerateOptions] = None
+    lang: Literal["ko", "en"] = "ko"
 
 
 class GenerateOptions(BaseModel):

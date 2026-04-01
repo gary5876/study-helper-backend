@@ -4,6 +4,11 @@ from __future__ import annotations
 import json
 
 
+_LANG_INSTRUCTION = {
+    "ko": "모든 출력(term, definition, question, explanation, hint 등)은 반드시 한국어로 작성하세요. JSON 키 이름은 영어 그대로 유지하세요.",
+    "en": "Write all output fields (term, definition, question, explanation, hint, etc.) in English.",
+}
+
 NOTES_SYSTEM = (
     "You are an expert study coach creating structured learning materials. "
     "Your output must be valid JSON only — no markdown fences, no extra text. "
@@ -24,9 +29,12 @@ FILL_SYSTEM = (
 )
 
 
-def build_notes_prompt(document_text: str) -> tuple[str, str]:
+def build_notes_prompt(document_text: str, lang: str = "ko") -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for study notes generation."""
-    user_prompt = f"""Generate structured study notes from the document below.
+    lang_note = _LANG_INSTRUCTION.get(lang, _LANG_INSTRUCTION["ko"])
+    user_prompt = f"""{lang_note}
+
+Generate structured study notes from the document below.
 
 OUTPUT FORMAT (JSON only):
 {{
@@ -57,13 +65,17 @@ def build_mcq_prompt(
     document_text: str,
     notes_json: dict,
     mcq_count: int,
+    lang: str = "ko",
 ) -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for MCQ generation."""
     concept_list = json.dumps(
         [{"id": c["id"], "term": c["term"]} for c in notes_json.get("key_concepts", [])],
         ensure_ascii=False,
     )
-    user_prompt = f"""Generate exactly {mcq_count} multiple-choice questions based on the document and study notes.
+    lang_note = _LANG_INSTRUCTION.get(lang, _LANG_INSTRUCTION["ko"])
+    user_prompt = f"""{lang_note}
+
+Generate exactly {mcq_count} multiple-choice questions based on the document and study notes.
 
 AVAILABLE CONCEPT IDs (use these for concept_id field):
 {concept_list}
@@ -103,13 +115,17 @@ def build_fill_prompt(
     document_text: str,
     notes_json: dict,
     fill_count: int,
+    lang: str = "ko",
 ) -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for fill-in-blank generation."""
     concept_list = json.dumps(
         [{"id": c["id"], "term": c["term"]} for c in notes_json.get("key_concepts", [])],
         ensure_ascii=False,
     )
-    user_prompt = f"""Generate exactly {fill_count} fill-in-the-blank questions from the document.
+    lang_note = _LANG_INSTRUCTION.get(lang, _LANG_INSTRUCTION["ko"])
+    user_prompt = f"""{lang_note}
+
+Generate exactly {fill_count} fill-in-the-blank questions from the document.
 
 AVAILABLE CONCEPT IDs:
 {concept_list}

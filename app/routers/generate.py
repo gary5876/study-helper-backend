@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _run_generation(session_id: str, api_key: str, options: GenerateOptions | None, plan: str = "paid"):
+async def _run_generation(session_id: str, api_key: str, options: GenerateOptions | None, plan: str = "paid", lang: str = "ko"):
     """Background task: run the full generation pipeline and persist result."""
     store = get_store()
 
@@ -73,7 +73,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     await store.update_status(session_id, "processing", progress_pct=5)
 
     # Build prompts
-    sys_notes, prompt_notes = build_notes_prompt(full_text)
+    sys_notes, prompt_notes = build_notes_prompt(full_text, lang)
     await store.update_status(session_id, "processing", progress_pct=10)
 
     # ── Stage 1: Notes generation ──────────────────────────────────────
@@ -114,7 +114,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
             await store.update_status(session_id, "failed", error_message=f"MCQ generation failed: {exc.message}")
             return
     else:
-        sys_mcq, prompt_mcq = build_mcq_prompt(full_text, notes_dict, mcq_count)
+        sys_mcq, prompt_mcq = build_mcq_prompt(full_text, notes_dict, mcq_count, lang)
         try:
             if plan == "gpt":
                 mcq_raw = await openai_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192)
@@ -136,7 +136,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
             await store.update_status(session_id, "failed", error_message=f"Fill generation failed: {exc.message}")
             return
     else:
-        sys_fill, prompt_fill = build_fill_prompt(full_text, notes_dict, fill_count)
+        sys_fill, prompt_fill = build_fill_prompt(full_text, notes_dict, fill_count, lang)
         try:
             if plan == "gpt":
                 fill_raw = await openai_generate(api_key, sys_fill, prompt_fill, max_tokens=2048)
@@ -220,7 +220,7 @@ async def start_generation(
     if record.status == "processing":
         return GenerateResponse(session_id=body.session_id, status="processing")
 
-    background_tasks.add_task(_run_generation, body.session_id, resolved_key, body.options, body.plan)
+    background_tasks.add_task(_run_generation, body.session_id, resolved_key, body.options, body.plan, body.lang)
     return GenerateResponse(session_id=body.session_id, status="processing")
 
 
