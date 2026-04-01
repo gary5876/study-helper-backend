@@ -123,6 +123,7 @@ async def _call_timely(
     user_prompt: str,
     max_tokens: int = 4096,
     session_id: str | None = None,
+    model: str | None = None,
 ) -> str:
     """Make a single TimelyGPT completion call and return the message text."""
     if _circuit_breaker.is_open:
@@ -136,7 +137,7 @@ async def _call_timely(
     payload = {
         "session_id": session_id or str(uuid.uuid4()),
         "messages": [{"role": "user", "content": user_prompt}],
-        "model": settings.TIMELY_MODEL,
+        "model": model or settings.TIMELY_MODEL,
         "instructions": system_prompt,
         "stream": False,
         "locale": "ko",
@@ -210,6 +211,7 @@ async def generate_with_retry(
     max_retries: int | None = None,
     on_attempt: Callable[[int], None] | None = None,
     session_id: str | None = None,
+    model: str | None = None,
 ) -> dict:
     """Call TimelyGPT, parse JSON response, retry on failure."""
     retries = max_retries if max_retries is not None else settings.MAX_RETRIES
@@ -219,7 +221,7 @@ async def generate_with_retry(
         if on_attempt:
             on_attempt(attempt)
         try:
-            raw = await _call_timely(api_key, system_prompt, user_prompt, max_tokens, session_id)
+            raw = await _call_timely(api_key, system_prompt, user_prompt, max_tokens, session_id, model)
             return extract_json(raw)
         except GenerationError as exc:
             if exc.status_code in (401, 429, 503):

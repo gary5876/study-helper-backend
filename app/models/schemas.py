@@ -109,6 +109,7 @@ class GenerateRequest(BaseModel):
 class GenerateOptions(BaseModel):
     mcq_count: Optional[int] = None   # None = auto-calculate
     fill_count: Optional[int] = None  # None = auto-calculate
+    model: Optional[str] = None       # None = use server default
 
 
 class GenerateResponse(BaseModel):

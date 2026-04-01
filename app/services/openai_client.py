@@ -65,6 +65,7 @@ async def _call_gpt(
     system_prompt: str,
     user_prompt: str,
     max_tokens: int = 4096,
+    model: str | None = None,
 ) -> str:
     """Make a single OpenAI Chat Completions call and return the text response."""
     if _circuit_breaker.is_open:
@@ -79,7 +80,7 @@ async def _call_gpt(
     )
     try:
         response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
+            model=model or settings.OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -131,6 +132,7 @@ async def generate_with_retry(
     max_tokens: int = 4096,
     max_retries: int | None = None,
     on_attempt: Callable[[int], None] | None = None,
+    model: str | None = None,
 ) -> dict:
     """Call GPT, parse JSON response, retry on failure."""
     retries = max_retries if max_retries is not None else settings.MAX_RETRIES
@@ -140,7 +142,7 @@ async def generate_with_retry(
         if on_attempt:
             on_attempt(attempt)
         try:
-            raw = await _call_gpt(api_key, system_prompt, user_prompt, max_tokens)
+            raw = await _call_gpt(api_key, system_prompt, user_prompt, max_tokens, model)
             return extract_json(raw)
         except GenerationError as exc:
             if exc.status_code in (401, 429, 503):

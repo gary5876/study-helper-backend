@@ -75,6 +75,7 @@ async def _call_claude(
     system_prompt: str,
     user_prompt: str,
     max_tokens: int = 4096,
+    model: str | None = None,
 ) -> str:
     """Make a single API call and return the text response."""
     if _circuit_breaker.is_open:
@@ -89,7 +90,7 @@ async def _call_claude(
     )
     try:
         message = await client.messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=model or settings.ANTHROPIC_MODEL,
             max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
@@ -140,6 +141,7 @@ async def generate_with_retry(
     max_tokens: int = 4096,
     max_retries: int | None = None,
     on_attempt: Callable[[int], None] | None = None,
+    model: str | None = None,
 ) -> dict:
     """
     Call Claude, parse JSON response, retry on failure.
@@ -153,7 +155,7 @@ async def generate_with_retry(
         if on_attempt:
             on_attempt(attempt)
         try:
-            raw = await _call_claude(api_key, system_prompt, user_prompt, max_tokens)
+            raw = await _call_claude(api_key, system_prompt, user_prompt, max_tokens, model)
             return extract_json(raw)
         except GenerationError as exc:
             # Auth / rate limit / service errors should not be retried

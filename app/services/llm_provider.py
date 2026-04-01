@@ -139,15 +139,15 @@ def _extract_retry_after(exc: Exception) -> float | None:
     return None
 
 
-async def _call_gemini(key: str, system_prompt: str, user_prompt: str, max_tokens: int) -> str:
+async def _call_gemini(key: str, system_prompt: str, user_prompt: str, max_tokens: int, model: str | None = None) -> str:
     """Single Gemini API call, returns raw text.
 
     Uses system_instruction + response_mime_type=application/json to maximise
     the chance of receiving a complete, valid JSON response.
     """
     genai.configure(api_key=key)
-    model = genai.GenerativeModel(
-        model_name=settings.GEMINI_MODEL,
+    gemini_model = genai.GenerativeModel(
+        model_name=model or settings.GEMINI_MODEL,
         system_instruction=system_prompt,
         generation_config=genai.GenerationConfig(
             max_output_tokens=max_tokens,
@@ -157,7 +157,7 @@ async def _call_gemini(key: str, system_prompt: str, user_prompt: str, max_token
     try:
         response = await asyncio.wait_for(
             asyncio.get_event_loop().run_in_executor(
-                None, lambda: model.generate_content(user_prompt)
+                None, lambda: gemini_model.generate_content(user_prompt)
             ),
             timeout=settings.GEMINI_TIMEOUT,
         )
@@ -187,7 +187,7 @@ async def _call_gemini(key: str, system_prompt: str, user_prompt: str, max_token
 # Single call with key-pool retry
 # ─────────────────────────────────────────
 
-async def _gemini_generate(system_prompt: str, user_prompt: str, max_tokens: int) -> dict:
+async def _gemini_generate(system_prompt: str, user_prompt: str, max_tokens: int, model: str | None = None) -> dict:
     """Try available keys in round-robin; fall back on rate limit.
 
     쿨다운 전략 (우선순위 순):
@@ -205,7 +205,7 @@ async def _gemini_generate(system_prompt: str, user_prompt: str, max_tokens: int
         except GenerationError:
             break
         try:
-            raw = await _call_gemini(key, system_prompt, user_prompt, max_tokens)
+            raw = await _call_gemini(key, system_prompt, user_prompt, max_tokens, model)
             pool.mark_success(key)
             return extract_json(raw)
         except _RateLimitError as exc:
@@ -226,7 +226,7 @@ async def _gemini_generate(system_prompt: str, user_prompt: str, max_tokens: int
         await asyncio.sleep(wait_seconds + 0.5)
         try:
             key = pool.get_key()
-            raw = await _call_gemini(key, system_prompt, user_prompt, max_tokens)
+            raw = await _call_gemini(key, system_prompt, user_prompt, max_tokens, model)
             pool.mark_success(key)
             return extract_json(raw)
         except _RateLimitError as exc:
@@ -252,6 +252,7 @@ async def _gemini_generate_batched(
     total_count: int,
     batch_size: int,
     max_tokens: int,
+    model: str | None = None,
 ) -> dict:
     """Generate questions in sequential batches and merge results.
 
@@ -274,7 +275,7 @@ async def _gemini_generate_batched(
             break
 
         user_prompt = build_user_prompt(current_size, all_questions)
-        result = await _gemini_generate(system_prompt, user_prompt, max_tokens)
+        result = await _gemini_generate(system_prompt, user_prompt, max_tokens, model)
         batch_questions = result.get("questions", [])
         all_questions.extend(batch_questions)
         logger.info(
@@ -292,15 +293,16 @@ async def _gemini_generate_batched(
 class GeminiClient:
     """High-level async client for Gemini-based study content generation."""
 
-    async def generate_notes(self, system_notes: str, prompt_notes: str) -> dict:
+    async def generate_notes(self, system_notes: str, prompt_notes: str, model: str | None = None) -> dict:
         """Generate study notes (single call — output fits within 4096 tokens)."""
-        return await _gemini_generate(system_notes, prompt_notes, max_tokens=4096)
+        return await _gemini_generate(system_notes, prompt_notes, max_tokens=4096, model=model)
 
     async def generate_mcq_batched(
         self,
         full_text: str,
         notes_dict: dict,
         total_count: int,
+        model: str | None = None,
     ) -> dict:
         """Generate MCQ questions in sequential batches of MCQ_BATCH_SIZE.
 
@@ -324,7 +326,7 @@ class GeminiClient:
             return user_prompt
 
         return await _gemini_generate_batched(
-            MCQ_SYSTEM, build_prompt, total_count, MCQ_BATCH_SIZE, max_tokens=4096
+            MCQ_SYSTEM, build_prompt, total_count, MCQ_BATCH_SIZE, max_tokens=4096, model=model
         )
 
     async def generate_fill_batched(
@@ -332,6 +334,7 @@ class GeminiClient:
         full_text: str,
         notes_dict: dict,
         total_count: int,
+        model: str | None = None,
     ) -> dict:
         """Generate fill-in-blank questions in sequential batches of FILL_BATCH_SIZE.
 
@@ -354,5 +357,5 @@ class GeminiClient:
             return user_prompt
 
         return await _gemini_generate_batched(
-            FILL_SYSTEM, build_prompt, total_count, FILL_BATCH_SIZE, max_tokens=2048
+            FILL_SYSTEM, build_prompt, total_count, FILL_BATCH_SIZE, max_tokens=2048, model=model
         )
