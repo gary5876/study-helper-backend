@@ -2,9 +2,9 @@ name: Backend CI/CD
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 # ── AWS 이전 시 아래 주석 해제 ──────────────────────────────
 # env:
