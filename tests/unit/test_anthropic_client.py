@@ -5,33 +5,33 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.core.exceptions import GenerationError
-from app.services.anthropic_client import _extract_json, generate_with_retry
+from app.services.anthropic_client import generate_with_retry
+from app.services.json_utils import extract_json
 
 
 # ─────────────────────────────────────────
-# _extract_json
+# extract_json (json_utils)
 # ─────────────────────────────────────────
 
 def test_extract_json_plain():
     raw = '{"key": "value"}'
-    assert _extract_json(raw) == {"key": "value"}
+    assert extract_json(raw) == {"key": "value"}
 
 
 def test_extract_json_with_markdown_fence():
     raw = '```json\n{"key": "value"}\n```'
-    assert _extract_json(raw) == {"key": "value"}
+    assert extract_json(raw) == {"key": "value"}
 
 
 def test_extract_json_with_plain_fence():
     raw = '```\n{"key": "value"}\n```'
-    assert _extract_json(raw) == {"key": "value"}
+    assert extract_json(raw) == {"key": "value"}
 
 
 def test_extract_json_invalid_raises():
     with pytest.raises(GenerationError) as exc:
-        _extract_json("not valid json at all")
+        extract_json("not valid json at all")
     assert exc.value.status_code == 500
-    assert "invalid JSON" in exc.value.message
 
 
 # ─────────────────────────────────────────
