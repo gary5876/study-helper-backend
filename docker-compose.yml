@@ -8,10 +8,13 @@ services:
     environment:
       - ENVIRONMENT=development
       - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://study@postgres:5432/studyhelper
       - AWS_REGION=ap-northeast-2
       - AWS_S3_BUCKET=fundamentals-pdf-temp
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     volumes:
       - ./app:/app/app   # hot-reload in dev
@@ -27,3 +30,23 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=study
+      - POSTGRES_DB=studyhelper
+      - POSTGRES_HOST_AUTH_METHOD=trust
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U study -d studyhelper"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

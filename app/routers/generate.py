@@ -31,6 +31,7 @@ from app.services.prompt_builder import (
 )
 from app.services.response_validator import validate_fill, validate_mcq, validate_notes
 from app.services.session_store import get_store
+from app.services.question_bank import get_cached, save_to_bank
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -45,6 +46,13 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     record = await store.get(session_id)
     if record is None:
         logger.error("Generation task: session %s not found.", session_id)
+        return
+
+    # Check question bank cache first
+    cached_json = await get_cached(record.pdf_hash)
+    if cached_json:
+        await store.update_status(session_id, "complete", progress_pct=100, result_json=cached_json)
+        logger.info("Question bank cache hit for session %s (hash=%s)", session_id, record.pdf_hash[:12])
         return
 
     # Load pre-parsed doc from the temporary result_json field
@@ -183,13 +191,18 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
         ),
     )
 
-    await store.update_status(
-        session_id,
-        "complete",
-        progress_pct=100,
-        result_json=content.model_dump_json(),
-    )
+    content_json = content.model_dump_json()
+    await store.update_status(session_id, "complete", progress_pct=100, result_json=content_json)
     logger.info("Generation complete for session %s: %d MCQ, %d fill", session_id, len(mcq_list), len(fill_list))
+
+    # Persist to question bank for future cache hits
+    await save_to_bank(
+        pdf_hash=record.pdf_hash,
+        pdf_name=record.pdf_name,
+        page_count=record.page_count,
+        word_count=record.word_count,
+        content_json=content_json,
+    )
 
 
 # ─────────────────────────────────────────

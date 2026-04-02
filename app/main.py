@@ -24,6 +24,7 @@ from app.core.exceptions import (
 from app.core.logging_config import configure_logging
 from app.routers import generate, upload
 from app.services.session_store import init_store
+from app.services.question_bank import init_question_bank, close_question_bank
 
 configure_logging()
 
@@ -45,7 +46,10 @@ async def lifespan(app: FastAPI):
         redis_url=settings.REDIS_URL if settings.ENVIRONMENT != "test" else None,
         tls_enabled=settings.REDIS_TLS_ENABLED,
     )
+    if settings.ENVIRONMENT != "test":
+        await init_question_bank(settings.DATABASE_URL)
     yield
+    await close_question_bank()
     logger.info("Shutting down.")
 
 

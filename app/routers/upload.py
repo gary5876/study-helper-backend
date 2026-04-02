@@ -1,6 +1,7 @@
 """POST /upload — accept PDF, parse it, store in session store."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 
@@ -58,6 +59,7 @@ async def upload_pdf(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     session_id = str(uuid.uuid4())
+    pdf_hash = hashlib.sha256(file_bytes).hexdigest()
 
     # Store record (PDF bytes not persisted server-side in dev mode — just metadata)
     record = SessionRecord(
@@ -66,6 +68,7 @@ async def upload_pdf(
         page_count=doc.page_count,
         word_count=doc.word_count,
         s3_key=f"uploads/{session_id}/{filename}",
+        pdf_hash=pdf_hash,
         status="uploaded",
     )
     # Attach parsed text to record so /generate can use it without re-parsing
