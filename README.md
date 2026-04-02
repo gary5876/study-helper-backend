@@ -4,7 +4,7 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 
 ---
 
-## 현재 상태 (2026-03-31)
+## 현재 상태 (2026-04-02)
 
 ### 완성된 기능
 
@@ -13,6 +13,8 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 - [x] **유료 플랜 (paid)** — Anthropic Claude Sonnet (서킷 브레이커 + 지수 백오프 재시도)
 - [x] **GPT 플랜 (gpt)** — OpenAI GPT-4o-mini / GPT-4o 등 (서킷 브레이커 + 재시도, JSON mode)
 - [x] **TimelyGPT 플랜 (timely)** — TimelyGPT (timelygpt.co.kr) API 키로 50+ 모델 선택 (토큰 캐싱 55분 + 서킷 브레이커 + 재시도)
+- [x] **모델 선택** — `GenerateOptions.model` 필드로 클라이언트가 원하는 모델 지정 가능 (없으면 서버 기본값 사용)
+- [x] **PDF 문제은행** — 업로드 시 SHA-256 해시 계산, PostgreSQL에 영구 저장, 동일 PDF 재업로드 시 LLM 호출 없이 즉시 반환
 - [x] 3단계 비동기 콘텐츠 생성 파이프라인 (Notes → MCQ 배치 → Fill 배치)
 - [x] Gemini MCQ/Fill 배치 분할 생성 (MCQ 5개/배치, Fill 8개/배치 — 토큰 한도 대응)
 - [x] 진행률 폴링 (`/status`, 0~100%)
@@ -22,7 +24,7 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 - [x] 지수 백오프 재시도 (최대 2회)
 - [x] Rate Limiting (IP당 분당 30회)
 - [x] 구조화 JSON 로깅 + Prometheus 메트릭
-- [x] Docker / Docker Compose
+- [x] Docker / Docker Compose (PostgreSQL 서비스 포함)
 - [x] GitHub Actions CI/CD → AWS ECS 자동 배포
 - [x] 단위 테스트 50개 + 통합 테스트 14개
 
@@ -55,7 +57,7 @@ app/
 ├── models/
 │   └── schemas.py             # Pydantic 데이터 모델
 ├── routers/
-│   ├── upload.py              # POST /upload
+│   ├── upload.py              # POST /upload (SHA-256 해시 계산 포함)
 │   └── generate.py            # POST /generate, GET /status, /result, DELETE /session
 ├── services/
 │   ├── pdf_parser.py          # PDF 텍스트 추출 + 섹션 감지
@@ -66,7 +68,8 @@ app/
 │   ├── json_utils.py          # JSON 추출 + 부분 복구 공유 유틸리티
 │   ├── prompt_builder.py      # 프롬프트 템플릿 생성
 │   ├── response_validator.py  # LLM 출력 검증 + 정제
-│   └── session_store.py       # Redis/인메모리 세션 관리
+│   ├── session_store.py       # Redis/인메모리 세션 관리
+│   └── question_bank.py       # PostgreSQL 문제은행 (asyncpg, pdf_hash 키)
 └── main.py                    # FastAPI 앱 초기화
 ```
 
@@ -99,7 +102,10 @@ POST /generate 수신
              └─ timely: TimelyClient.generate_with_retry() (2048 tokens, 1회)
              └─▶ validate_fill() → FillQuestion 목록
              └─▶ StudyContent JSON → 세션 스토어 저장
+             └─▶ question_bank.save_to_bank() — PostgreSQL 영구 저장
 ```
+
+> **문제은행 캐시**: `/generate` 요청 시 `session.pdf_hash`로 `question_bank` 조회 → 히트 시 LLM 3단계 파이프라인 생략, 저장된 콘텐츠 즉시 반환. DB 연결 실패 시 기존 생성 플로우로 자동 폴백.
 
 > **Gemini 배치 중복 방지**: 각 배치 프롬프트에 이전 배치의 question/answer 텍스트를 주입해 중복을 1차 방지하고, validate_mcq의 Jaccard 70% 유사도 필터로 2차 제거합니다.
 
@@ -293,12 +299,24 @@ Response:
 # 1. 환경 파일 복사
 cp .env.example .env
 
-# 2. Docker Compose로 실행 (Redis 포함)
+# 2. Docker Compose로 실행 (Redis + PostgreSQL 포함)
 docker-compose up
 
-# 또는 직접 실행
+# 또는 직접 실행 (PostgreSQL이 별도로 실행 중이어야 함)
 pip install -r requirements.txt
 uvicorn app.main:app --reload
+```
+
+**필수 환경변수 (.env)**
+```
+# 무료 플랜 (Gemini)
+GEMINI_API_KEYS=키1,키2,키3
+
+# 문제은행 DB (docker-compose 사용 시 자동 설정됨)
+DATABASE_URL=postgresql://study@localhost:5432/studyhelper
+
+# Redis (docker-compose 사용 시 자동 설정됨)
+REDIS_URL=redis://localhost:6379
 ```
 
 - API: `http://localhost:8000`
@@ -346,6 +364,7 @@ uvicorn app.main:app --reload
 | `ALLOWED_ORIGINS` | `["http://localhost:3000","http://localhost:8081"]` | CORS 허용 출처 |
 | `REDIS_URL` | `redis://localhost:6379` | Redis 연결 URL |
 | `REDIS_TLS_ENABLED` | `false` | Redis TLS 활성화 |
+| `DATABASE_URL` | `postgresql://study@localhost:5432/studyhelper` | PostgreSQL 연결 URL (문제은행) |
 | `RATE_LIMIT_PER_MINUTE` | `30` | IP당 분당 최대 요청 수 |
 | `MAX_PDF_PAGES` | `50` | 처리할 최대 PDF 페이지 수 |
 | `MAX_PDF_SIZE_MB` | `20` | 최대 업로드 파일 크기 |
@@ -448,7 +467,8 @@ pytest tests/integration/ -v
 
 ## Data Privacy
 
-- Anthropic API 키는 요청별로 포워딩되며 서버에 저장되지 않음
+- API 키 (Anthropic/OpenAI/TimelyGPT)는 요청별로 포워딩되며 서버에 저장되지 않음
 - PDF는 S3에 임시 저장 후 자동 삭제 (라이프사이클 규칙 권장)
 - 생성 결과는 Redis에 2시간 캐시 후 만료
+- **문제은행**: 생성된 학습 콘텐츠(노트·MCQ·빈칸)는 PDF 해시(SHA-256) 키로 PostgreSQL에 영구 저장됨. 동일 PDF를 업로드한 다른 사용자에게도 같은 콘텐츠 제공 가능 — 업로드 전 사용자 동의 필요 (모바일 앱 처리)
 - 사용자 식별 정보 미수집
