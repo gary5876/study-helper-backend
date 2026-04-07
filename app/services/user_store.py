@@ -1,0 +1,198 @@
+"""Supabase PostgreSQL data access layer for user-scoped data."""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Optional
+
+import asyncpg
+
+from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
+settings = get_settings()
+
+_pool: Optional[asyncpg.Pool] = None
+
+
+async def init_user_store(database_url: str) -> None:
+    global _pool
+    try:
+        _pool = await asyncpg.create_pool(database_url, min_size=1, max_size=5)
+        logger.info("UserStore: connected to Supabase PostgreSQL.")
+    except Exception as exc:
+        logger.warning("UserStore: Supabase PostgreSQL unavailable (%s).", exc)
+        _pool = None
+
+
+async def close_user_store() -> None:
+    global _pool
+    if _pool:
+        await _pool.close()
+        _pool = None
+
+
+def get_user_store() -> "UserStore":
+    return UserStore(_pool)
+
+
+class UserStore:
+    def __init__(self, pool: Optional[asyncpg.Pool]):
+        self._pool = pool
+
+    def _require_pool(self) -> asyncpg.Pool:
+        if not self._pool:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=503, detail="데이터베이스에 연결할 수 없습니다")
+        return self._pool
+
+    # ── Subjects ──────────────────────────────────────
+
+    async def get_subjects(self, user_id: str) -> list[dict]:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id::text, name, color, created_at FROM user_subjects "
+                "WHERE user_id = $1 ORDER BY created_at",
+                user_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def create_subject(self, user_id: str, name: str, color: str) -> dict:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO user_subjects (user_id, name, color) VALUES ($1, $2, $3) "
+                "ON CONFLICT (user_id, name) DO UPDATE SET color = EXCLUDED.color "
+                "RETURNING id::text, name, color, created_at",
+                user_id, name, color,
+            )
+        return dict(row)
+
+    async def delete_subject(self, user_id: str, subject_id: str) -> bool:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM user_subjects WHERE id = $1::uuid AND user_id = $2",
+                subject_id, user_id,
+            )
+        return result.split()[-1] != "0"
+
+    async def sync_subjects(self, user_id: str, subjects: list) -> int:
+        if not subjects:
+            return 0
+        pool = self._require_pool()
+        count = 0
+        async with pool.acquire() as conn:
+            for s in subjects:
+                await conn.execute(
+                    "INSERT INTO user_subjects (user_id, name, color) VALUES ($1, $2, $3) "
+                    "ON CONFLICT (user_id, name) DO NOTHING",
+                    user_id, s.name, s.color,
+                )
+                count += 1
+        return count
+
+    # ── Sessions ──────────────────────────────────────
+
+    async def get_sessions(self, user_id: str) -> list[dict]:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id::text, pdf_name, pdf_hash, subject_id::text, "
+                "page_count, word_count, status, created_at, last_accessed "
+                "FROM user_sessions WHERE user_id = $1 ORDER BY created_at DESC",
+                user_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def create_session(self, user_id: str, body) -> dict:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            subject_id = body.subject_id  # may be None
+            row = await conn.fetchrow(
+                "INSERT INTO user_sessions "
+                "(user_id, pdf_name, pdf_hash, subject_id, page_count, word_count, status) "
+                "VALUES ($1, $2, $3, $4::uuid, $5, $6, $7) "
+                "RETURNING id::text, pdf_name, pdf_hash, subject_id::text, "
+                "page_count, word_count, status, created_at, last_accessed",
+                user_id, body.pdf_name, body.pdf_hash,
+                subject_id, body.page_count, body.word_count, body.status,
+            )
+        return dict(row)
+
+    async def sync_sessions(self, user_id: str, sessions: list) -> int:
+        if not sessions:
+            return 0
+        pool = self._require_pool()
+        count = 0
+        async with pool.acquire() as conn:
+            for s in sessions:
+                await conn.execute(
+                    "INSERT INTO user_sessions "
+                    "(user_id, pdf_name, pdf_hash, subject_id, page_count, word_count, status) "
+                    "VALUES ($1, $2, $3, $4::uuid, $5, $6, $7) "
+                    "ON CONFLICT DO NOTHING",
+                    user_id, s.pdf_name, s.pdf_hash,
+                    s.subject_id, s.page_count, s.word_count, s.status,
+                )
+                count += 1
+        return count
+
+    # ── Review Schedule ───────────────────────────────
+
+    async def get_due_reviews(self, user_id: str) -> list[dict]:
+        pool = self._require_pool()
+        now = datetime.now(timezone.utc)
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id::text, session_id::text, question_id, question_type, "
+                "interval_days, next_review_at, ease_factor, repetitions, status "
+                "FROM user_review_schedule "
+                "WHERE user_id = $1 AND next_review_at <= $2 AND status != 'done' "
+                "ORDER BY next_review_at",
+                user_id, now,
+            )
+        return [dict(r) for r in rows]
+
+    async def upsert_review(self, user_id: str, body) -> dict:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO user_review_schedule "
+                "(user_id, session_id, question_id, question_type, "
+                "interval_days, next_review_at, ease_factor, repetitions, status) "
+                "VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9) "
+                "ON CONFLICT (session_id, question_id) DO UPDATE SET "
+                "interval_days = EXCLUDED.interval_days, "
+                "next_review_at = EXCLUDED.next_review_at, "
+                "ease_factor = EXCLUDED.ease_factor, "
+                "repetitions = EXCLUDED.repetitions, "
+                "status = EXCLUDED.status "
+                "RETURNING id::text, session_id::text, question_id, question_type, "
+                "interval_days, next_review_at, ease_factor, repetitions, status",
+                user_id, body.session_id, body.question_id, body.question_type,
+                body.interval_days, body.next_review_at,
+                body.ease_factor, body.repetitions, body.status,
+            )
+        return dict(row)
+
+    async def sync_reviews(self, user_id: str, reviews: list) -> int:
+        if not reviews:
+            return 0
+        pool = self._require_pool()
+        count = 0
+        async with pool.acquire() as conn:
+            for r in reviews:
+                await conn.execute(
+                    "INSERT INTO user_review_schedule "
+                    "(user_id, session_id, question_id, question_type, "
+                    "interval_days, next_review_at, ease_factor, repetitions, status) "
+                    "VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9) "
+                    "ON CONFLICT (session_id, question_id) DO NOTHING",
+                    user_id, r.session_id, r.question_id, r.question_type,
+                    r.interval_days, r.next_review_at,
+                    r.ease_factor, r.repetitions, r.status,
+                )
+                count += 1
+        return count

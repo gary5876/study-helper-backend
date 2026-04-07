@@ -22,9 +22,10 @@ from app.core.exceptions import (
     unhandled_exception_handler,
 )
 from app.core.logging_config import configure_logging
-from app.routers import generate, upload
+from app.routers import generate, upload, user
 from app.services.session_store import init_store
 from app.services.question_bank import init_question_bank, close_question_bank
+from app.services.user_store import init_user_store, close_user_store
 
 configure_logging()
 
@@ -48,8 +49,11 @@ async def lifespan(app: FastAPI):
     )
     if settings.ENVIRONMENT != "test":
         await init_question_bank(settings.DATABASE_URL)
+    if settings.ENVIRONMENT != "test" and settings.SUPABASE_DB_URL:
+        await init_user_store(settings.SUPABASE_DB_URL)
     yield
     await close_question_bank()
+    await close_user_store()
     logger.info("Shutting down.")
 
 
@@ -92,6 +96,7 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 # Routers
 app.include_router(upload.router, tags=["upload"])
 app.include_router(generate.router, tags=["generate"])
+app.include_router(user.router)
 
 
 @app.get("/health", tags=["health"])

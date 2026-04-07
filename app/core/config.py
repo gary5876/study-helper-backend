@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     def gemini_keys_list(self) -> list[str]:
         return [k.strip() for k in self.GEMINI_API_KEYS.split(",") if k.strip()]
 
+    # Supabase
+    SUPABASE_URL: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
+    SUPABASE_JWT_SECRET: str = ""
+    # Direct PostgreSQL connection to Supabase DB
+    # Format: postgresql://postgres.[project-ref]:[password]@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres
+    SUPABASE_DB_URL: str = ""
+
     # Rate limiting (requests per minute per IP)
     RATE_LIMIT_PER_MINUTE: int = 30
 
