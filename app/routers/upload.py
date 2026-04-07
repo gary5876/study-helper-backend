@@ -5,14 +5,16 @@ import hashlib
 import logging
 import uuid
 
-from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
 from typing import Optional
 
+from app.core.auth import get_current_user
 from app.core.config import get_settings
 from app.core.exceptions import PDFParseError
 from app.models.schemas import UploadResponse
 from app.services.pdf_parser import parse_pdf
 from app.services.session_store import SessionRecord, get_store
+from app.services.user_store import get_user_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -31,6 +33,8 @@ async def upload_pdf(
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
     api_key: Optional[str] = Form(default=None),  # kept for backwards-compat
     plan: str = Form(default="paid"),
+    subject_id: Optional[str] = Form(default=None),
+    user: Optional[dict] = Depends(get_current_user),
 ):
     """
     Upload a PDF file. Returns a session_id for subsequent /generate calls.
@@ -87,6 +91,22 @@ async def upload_pdf(
 
     store = get_store()
     await store.save(record_with_text)
+
+    # 로그인 상태면 클라우드에도 세션 저장
+    if user:
+        try:
+            from app.routers.user import SessionCreate
+            user_store = get_user_store()
+            await user_store.create_session(user["user_id"], SessionCreate(
+                pdf_name=filename,
+                pdf_hash=pdf_hash,
+                subject_id=subject_id,
+                page_count=doc.page_count,
+                word_count=doc.word_count,
+                status="pending",
+            ))
+        except Exception as exc:
+            logger.warning("Cloud session save failed for user %s: %s", user["user_id"], exc)
 
     if doc.warning:
         logger.warning("Upload %s: %s", session_id, doc.warning)
