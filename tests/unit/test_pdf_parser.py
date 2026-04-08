@@ -23,6 +23,10 @@ def _make_pdf(pages, is_encrypted=False):
     pdf.pages = pages
     pdf.doc = MagicMock()
     pdf.doc.is_encrypted = is_encrypted
+    # MagicMock auto-creates missing attrs as truthy MagicMock objects.
+    # Explicitly set `encryption` to None so the password-protected check
+    # only triggers when is_encrypted=True.
+    pdf.doc.encryption = None
     return pdf
 
 

@@ -4,7 +4,7 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 
 ---
 
-## 현재 상태 (2026-04-02)
+## 현재 상태 (2026-04-08)
 
 ### 완성된 기능
 

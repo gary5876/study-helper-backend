@@ -22,7 +22,6 @@ from app.models.schemas import (
 from app.services.anthropic_client import generate_with_retry as anthropic_generate
 from app.services.openai_client import generate_with_retry as openai_generate
 from app.services.timely_client import generate_with_retry as timely_generate
-from app.services.llm_provider import GeminiClient
 from app.services.prompt_builder import (
     build_fill_prompt,
     build_mcq_prompt,
@@ -88,13 +87,8 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     await store.update_status(session_id, "processing", progress_pct=10)
 
     # ── Stage 1: Notes generation ──────────────────────────────────────
-    if plan == "free":
-        gemini = GeminiClient()
-
     try:
-        if plan == "free":
-            notes_raw = await gemini.generate_notes(sys_notes, prompt_notes, model=model)
-        elif plan == "gpt":
+        if plan == "gpt":
             notes_raw = await openai_generate(api_key, sys_notes, prompt_notes, max_tokens=4096, model=model)
         elif plan == "timely":
             notes_raw = await timely_generate(api_key, sys_notes, prompt_notes, max_tokens=4096, model=model)
@@ -116,48 +110,32 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     notes_dict = notes_raw  # keep raw dict for prompt context
 
     # ── Stage 2: MCQ generation ─────────────────────────────────────────
-    if plan == "free":
-        # Batched: MCQ_BATCH_SIZE questions per call to stay within Gemini output limits.
-        # Notes are complete here, so concept IDs are correctly populated.
-        try:
-            mcq_raw = await gemini.generate_mcq_batched(full_text, notes_dict, mcq_count, model=model)
-        except GenerationError as exc:
-            await store.update_status(session_id, "failed", error_message=f"MCQ generation failed: {exc.message}")
-            return
-    else:
-        sys_mcq, prompt_mcq = build_mcq_prompt(full_text, notes_dict, mcq_count, lang)
-        try:
-            if plan == "gpt":
-                mcq_raw = await openai_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192, model=model)
-            elif plan == "timely":
-                mcq_raw = await timely_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192, model=model)
-            else:
-                mcq_raw = await anthropic_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192, model=model)
-        except GenerationError as exc:
-            await store.update_status(session_id, "failed", error_message=f"MCQ generation failed: {exc.message}")
-            return
+    sys_mcq, prompt_mcq = build_mcq_prompt(full_text, notes_dict, mcq_count, lang)
+    try:
+        if plan == "gpt":
+            mcq_raw = await openai_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192, model=model)
+        elif plan == "timely":
+            mcq_raw = await timely_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192, model=model)
+        else:
+            mcq_raw = await anthropic_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192, model=model)
+    except GenerationError as exc:
+        await store.update_status(session_id, "failed", error_message=f"MCQ generation failed: {exc.message}")
+        return
 
     await store.update_status(session_id, "processing", progress_pct=70)
 
     # ── Stage 3: Fill-in-blank generation ──────────────────────────────
-    if plan == "free":
-        try:
-            fill_raw = await gemini.generate_fill_batched(full_text, notes_dict, fill_count, model=model)
-        except GenerationError as exc:
-            await store.update_status(session_id, "failed", error_message=f"Fill generation failed: {exc.message}")
-            return
-    else:
-        sys_fill, prompt_fill = build_fill_prompt(full_text, notes_dict, fill_count, lang)
-        try:
-            if plan == "gpt":
-                fill_raw = await openai_generate(api_key, sys_fill, prompt_fill, max_tokens=2048, model=model)
-            elif plan == "timely":
-                fill_raw = await timely_generate(api_key, sys_fill, prompt_fill, max_tokens=2048, model=model)
-            else:
-                fill_raw = await anthropic_generate(api_key, sys_fill, prompt_fill, max_tokens=2048, model=model)
-        except GenerationError as exc:
-            await store.update_status(session_id, "failed", error_message=f"Fill generation failed: {exc.message}")
-            return
+    sys_fill, prompt_fill = build_fill_prompt(full_text, notes_dict, fill_count, lang)
+    try:
+        if plan == "gpt":
+            fill_raw = await openai_generate(api_key, sys_fill, prompt_fill, max_tokens=2048, model=model)
+        elif plan == "timely":
+            fill_raw = await timely_generate(api_key, sys_fill, prompt_fill, max_tokens=2048, model=model)
+        else:
+            fill_raw = await anthropic_generate(api_key, sys_fill, prompt_fill, max_tokens=2048, model=model)
+    except GenerationError as exc:
+        await store.update_status(session_id, "failed", error_message=f"Fill generation failed: {exc.message}")
+        return
 
     await store.update_status(session_id, "processing", progress_pct=85)
 
@@ -182,8 +160,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
             word_count=record.word_count,
             generated_at=datetime.now(timezone.utc).isoformat(),
             model_used=model or (
-                settings.GEMINI_MODEL if plan == "free"
-                else settings.OPENAI_MODEL if plan == "gpt"
+                settings.OPENAI_MODEL if plan == "gpt"
                 else settings.TIMELY_MODEL if plan == "timely"
                 else settings.ANTHROPIC_MODEL
             ),

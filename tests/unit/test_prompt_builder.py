@@ -37,14 +37,14 @@ def test_build_fill_prompt_includes_count():
 
 def test_calculate_question_counts_minimum():
     mcq, fill = calculate_question_counts(1)
-    assert mcq == 10  # max(10, min(30, 1*3))
-    assert fill == 8   # max(8,  min(20, 1*2))
+    assert mcq == 10  # max(10, min(20, 1*3)) = 10
+    assert fill == 6   # max(6,  min(15, 1*2)) = 6
 
 
 def test_calculate_question_counts_large():
     mcq, fill = calculate_question_counts(20)
-    assert mcq == 30  # capped at 30
-    assert fill == 20  # capped at 20
+    assert mcq == 20  # capped at 20
+    assert fill == 15  # capped at 15
 
 
 def test_calculate_question_counts_medium():

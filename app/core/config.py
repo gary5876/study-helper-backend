@@ -35,11 +35,6 @@ class Settings(BaseSettings):
     # Anthropic
     ANTHROPIC_TIMEOUT: int = 30  # seconds per API call
 
-    # Gemini (free plan)
-    GEMINI_API_KEYS: str = ""          # 콤마구분 "key1,key2,key3"
-    GEMINI_MODEL: str = "gemini-2.0-flash"
-    GEMINI_TIMEOUT: int = 60
-
     # OpenAI (gpt plan)
     OPENAI_MODEL: str = "gpt-4o-mini"
     OPENAI_TIMEOUT: int = 60
@@ -47,10 +42,6 @@ class Settings(BaseSettings):
     # TimelyGPT (timely plan) — https://timelygpt.co.kr
     TIMELY_MODEL: str = "gpt-4.1"
     TIMELY_TIMEOUT: int = 60
-
-    @property
-    def gemini_keys_list(self) -> list[str]:
-        return [k.strip() for k in self.GEMINI_API_KEYS.split(",") if k.strip()]
 
     # Supabase
     SUPABASE_URL: str = ""
