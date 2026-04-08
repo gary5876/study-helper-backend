@@ -1,5 +1,7 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import json
 from functools import lru_cache
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -29,8 +31,19 @@ class Settings(BaseSettings):
     ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
     MAX_RETRIES: int = 2
 
-    # CORS — override in production: ALLOWED_ORIGINS='["https://yourapp.com"]'
+    # CORS — override in production via env var (JSON array or comma-separated):
+    #   ALLOWED_ORIGINS='["https://yourapp.com"]'  or  ALLOWED_ORIGINS='https://yourapp.com,http://localhost:3000'
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8081"]
+
+    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def parse_origins(cls, v: object) -> object:
+        if not isinstance(v, str):
+            return v
+        v = v.strip()
+        if v.startswith("["):
+            return json.loads(v)
+        return [o.strip() for o in v.split(",") if o.strip()]
 
     # Anthropic
     ANTHROPIC_TIMEOUT: int = 30  # seconds per API call
