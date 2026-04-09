@@ -16,10 +16,10 @@ NOTES_SYSTEM = (
 )
 
 MCQ_SYSTEM = (
-    "You are an expert educational assessment designer. "
+    "You are an expert educational assessment designer specializing in rigorous exam questions. "
     "Your output must be valid JSON only — no markdown fences, no extra text. "
-    "Every question must test understanding, not mere recall. "
-    "Distractors must be plausible, not obviously wrong."
+    "Every question must genuinely test understanding, not mere recall. "
+    "Distractors must be plausible and require careful reasoning to eliminate."
 )
 
 FILL_SYSTEM = (
@@ -27,6 +27,37 @@ FILL_SYSTEM = (
     "Your output must be valid JSON only — no markdown fences, no extra text. "
     "Blanks must target key terms from the document, not filler words."
 )
+
+_MCQ_LEVEL_GUIDE = """\
+LEVEL DEFINITIONS (assign level 1–5 to each question):
+  Level 1 — Basic recall: reproduce a term, name, or isolated fact verbatim.
+  Level 2 — Comprehension: explain or paraphrase a concept in your own words.
+  Level 3 — Application (minimum exam level): apply a concept to a concrete scenario; simple inference.
+  Level 4 — Analysis (standard exam): compare/contrast multiple concepts, identify causes, evaluate trade-offs.
+  Level 5 — Synthesis/Critical (hard exam): design solutions, expose edge cases, integrate multiple concepts, argue for/against.
+
+DISTRIBUTION: ~8% level-1, ~12% level-2, ~20% level-3, ~35% level-4, ~25% level-5
+(Round to nearest whole question. Most questions should be level 4–5.)
+
+QUESTION TYPE:
+  "concept"     — tests theoretical knowledge: definitions, principles, mechanisms.
+  "application" — tests practical use: problem-solving, calculation, scenario analysis.\
+"""
+
+_FILL_LEVEL_GUIDE = """\
+LEVEL DEFINITIONS (assign level 1–5 to each question):
+  Level 1 — Recall a single term or label directly stated in the document.
+  Level 2 — Complete a definition or explanatory phrase.
+  Level 3 — Fill a term that requires understanding the surrounding context.
+  Level 4 — Fill a technical term embedded in a comparative or analytical sentence.
+  Level 5 — Fill a term in a complex sentence requiring synthesis of multiple concepts.
+
+DISTRIBUTION: ~10% level-1, ~15% level-2, ~25% level-3, ~35% level-4, ~15% level-5
+
+QUESTION TYPE:
+  "concept"     — the blank is a theoretical term or principle.
+  "application" — the blank is a result, method, or outcome in a practical context.\
+"""
 
 
 def build_notes_prompt(document_text: str, lang: str = "ko") -> tuple[str, str]:
@@ -80,6 +111,8 @@ Generate exactly {mcq_count} multiple-choice questions based on the document and
 AVAILABLE CONCEPT IDs (use these for concept_id field):
 {concept_list}
 
+{_MCQ_LEVEL_GUIDE}
+
 OUTPUT FORMAT (JSON only):
 {{
   "questions": [
@@ -90,17 +123,17 @@ OUTPUT FORMAT (JSON only):
       "correct_answer": "A|B|C|D",
       "explanation": "<why the correct answer is right, referencing the document>",
       "concept_id": "<one of the concept IDs above>",
-      "difficulty": "easy|medium|hard"
+      "level": 1|2|3|4|5,
+      "question_type": "concept|application"
     }}
   ]
 }}
 
-DISTRIBUTION: ~30% easy, ~50% medium, ~20% hard
 RULES:
 - Each option must be distinct — no duplicate option text
 - Explanation must reference specific content from the document
-- Questions must test understanding, not just memorization
 - Every question MUST have a concept_id from the list above
+- Aim for the level distribution above; do NOT cluster everything at level 3
 
 STUDY NOTES (for context):
 {json.dumps(notes_json, ensure_ascii=False, indent=2)}
@@ -130,6 +163,8 @@ Generate exactly {fill_count} fill-in-the-blank questions from the document.
 AVAILABLE CONCEPT IDs:
 {concept_list}
 
+{_FILL_LEVEL_GUIDE}
+
 OUTPUT FORMAT (JSON only):
 {{
   "questions": [
@@ -139,7 +174,9 @@ OUTPUT FORMAT (JSON only):
       "answer": "<exact word or phrase>",
       "acceptable_variants": ["<synonym or alternate phrasing>"],
       "hint": "<brief hint that doesn't give away the answer>",
-      "concept_id": "<concept ID from list above>"
+      "concept_id": "<concept ID from list above>",
+      "level": 1|2|3|4|5,
+      "question_type": "concept|application"
     }}
   ]
 }}

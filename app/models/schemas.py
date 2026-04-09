@@ -1,7 +1,15 @@
 from __future__ import annotations
 from typing import Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import uuid
+
+
+# ─────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────
+
+_DIFFICULTY_TO_LEVEL: dict[str, int] = {"easy": 2, "medium": 3, "hard": 4}
+_VALID_QUESTION_TYPES = {"concept", "application"}
 
 
 # ─────────────────────────────────────────
@@ -50,7 +58,27 @@ class MCQQuestion(BaseModel):
     correct_answer: Literal["A", "B", "C", "D"]
     explanation: str
     concept_id: str
-    difficulty: Literal["easy", "medium", "hard"] = "medium"
+    level: int = 3                                          # 1–5 (replaces difficulty)
+    question_type: Literal["concept", "application"] = "concept"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_fields(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        # Backward compat: old data has 'difficulty' string, no 'level'
+        if "level" not in data and "difficulty" in data:
+            data["level"] = _DIFFICULTY_TO_LEVEL.get(str(data["difficulty"]), 3)
+        # Clamp level to 1–5
+        if "level" in data:
+            try:
+                data["level"] = max(1, min(5, int(data["level"])))
+            except (ValueError, TypeError):
+                data["level"] = 3
+        # Coerce invalid question_type
+        if data.get("question_type") not in _VALID_QUESTION_TYPES:
+            data["question_type"] = "concept"
+        return data
 
 
 # ─────────────────────────────────────────
@@ -64,6 +92,24 @@ class FillQuestion(BaseModel):
     acceptable_variants: list[str] = Field(default_factory=list)
     hint: str = ""
     concept_id: str
+    level: int = 3                                          # 1–5
+    question_type: Literal["concept", "application"] = "concept"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_fields(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        if "level" not in data and "difficulty" in data:
+            data["level"] = _DIFFICULTY_TO_LEVEL.get(str(data["difficulty"]), 3)
+        if "level" in data:
+            try:
+                data["level"] = max(1, min(5, int(data["level"])))
+            except (ValueError, TypeError):
+                data["level"] = 3
+        if data.get("question_type") not in _VALID_QUESTION_TYPES:
+            data["question_type"] = "concept"
+        return data
 
 
 # ─────────────────────────────────────────

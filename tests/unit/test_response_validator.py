@@ -36,7 +36,8 @@ VALID_MCQ_RAW = {
             "correct_answer": "A",
             "explanation": "Machine learning is indeed a subset of artificial intelligence that uses algorithms.",
             "concept_id": "c1",
-            "difficulty": "easy",
+            "level": 3,
+            "question_type": "concept",
         }
     ]
 }
@@ -50,6 +51,8 @@ VALID_FILL_RAW = {
             "acceptable_variants": ["ML"],
             "hint": "Two-word term starting with M",
             "concept_id": "c1",
+            "level": 3,
+            "question_type": "concept",
         }
     ]
 }
@@ -88,13 +91,15 @@ def test_validate_notes_missing_section_creates_fallback():
 
 
 # ─────────────────────────────────────────
-# MCQ validation
+# MCQ validation — core
 # ─────────────────────────────────────────
 
 def test_validate_mcq_happy_path():
     questions = validate_mcq(VALID_MCQ_RAW, {"c1", "c2"}, SOURCE_TEXT)
     assert len(questions) == 1
     assert questions[0].correct_answer == "A"
+    assert questions[0].level == 3
+    assert questions[0].question_type == "concept"
 
 
 def test_validate_mcq_invalid_correct_answer_skips():
@@ -107,7 +112,8 @@ def test_validate_mcq_invalid_correct_answer_skips():
                 "correct_answer": "Z",  # invalid
                 "explanation": "explanation",
                 "concept_id": "c1",
-                "difficulty": "easy",
+                "level": 3,
+                "question_type": "concept",
             }
         ]
     }
@@ -125,7 +131,8 @@ def test_validate_mcq_duplicate_options_skips():
                 "correct_answer": "A",
                 "explanation": "explanation",
                 "concept_id": "c1",
-                "difficulty": "easy",
+                "level": 3,
+                "question_type": "concept",
             }
         ]
     }
@@ -149,19 +156,110 @@ def test_validate_mcq_no_valid_questions_raises():
 
 
 # ─────────────────────────────────────────
-# Fill validation
+# MCQ validation — level coercion
+# ─────────────────────────────────────────
+
+def test_validate_mcq_level_integer_preserved():
+    for level in (1, 2, 3, 4, 5):
+        raw = {"questions": [{**VALID_MCQ_RAW["questions"][0], "level": level}]}
+        qs = validate_mcq(raw, {"c1"}, SOURCE_TEXT)
+        assert qs[0].level == level
+
+
+def test_validate_mcq_level_out_of_range_clamped():
+    raw = {"questions": [{**VALID_MCQ_RAW["questions"][0], "level": 9}]}
+    qs = validate_mcq(raw, {"c1"}, SOURCE_TEXT)
+    assert qs[0].level == 5
+
+    raw = {"questions": [{**VALID_MCQ_RAW["questions"][0], "level": 0}]}
+    qs = validate_mcq(raw, {"c1"}, SOURCE_TEXT)
+    assert qs[0].level == 1
+
+
+def test_validate_mcq_level_missing_defaults_to_3():
+    q = {k: v for k, v in VALID_MCQ_RAW["questions"][0].items() if k != "level"}
+    raw = {"questions": [q]}
+    qs = validate_mcq(raw, {"c1"}, SOURCE_TEXT)
+    assert qs[0].level == 3
+
+
+# ─────────────────────────────────────────
+# MCQ validation — backward compat (legacy difficulty strings)
+# ─────────────────────────────────────────
+
+def test_validate_mcq_legacy_difficulty_easy():
+    q = {k: v for k, v in VALID_MCQ_RAW["questions"][0].items() if k != "level"}
+    q["difficulty"] = "easy"
+    qs = validate_mcq({"questions": [q]}, {"c1"}, SOURCE_TEXT)
+    assert qs[0].level == 2
+
+
+def test_validate_mcq_legacy_difficulty_medium():
+    q = {k: v for k, v in VALID_MCQ_RAW["questions"][0].items() if k != "level"}
+    q["difficulty"] = "medium"
+    qs = validate_mcq({"questions": [q]}, {"c1"}, SOURCE_TEXT)
+    assert qs[0].level == 3
+
+
+def test_validate_mcq_legacy_difficulty_hard():
+    q = {k: v for k, v in VALID_MCQ_RAW["questions"][0].items() if k != "level"}
+    q["difficulty"] = "hard"
+    qs = validate_mcq({"questions": [q]}, {"c1"}, SOURCE_TEXT)
+    assert qs[0].level == 4
+
+
+def test_validate_mcq_level_takes_priority_over_difficulty():
+    """If both level and difficulty are present, level wins."""
+    q = {**VALID_MCQ_RAW["questions"][0], "level": 5, "difficulty": "easy"}
+    qs = validate_mcq({"questions": [q]}, {"c1"}, SOURCE_TEXT)
+    assert qs[0].level == 5
+
+
+# ─────────────────────────────────────────
+# MCQ validation — question_type
+# ─────────────────────────────────────────
+
+def test_validate_mcq_question_type_concept():
+    raw = {"questions": [{**VALID_MCQ_RAW["questions"][0], "question_type": "concept"}]}
+    qs = validate_mcq(raw, {"c1"}, SOURCE_TEXT)
+    assert qs[0].question_type == "concept"
+
+
+def test_validate_mcq_question_type_application():
+    raw = {"questions": [{**VALID_MCQ_RAW["questions"][0], "question_type": "application"}]}
+    qs = validate_mcq(raw, {"c1"}, SOURCE_TEXT)
+    assert qs[0].question_type == "application"
+
+
+def test_validate_mcq_question_type_invalid_defaults_to_concept():
+    raw = {"questions": [{**VALID_MCQ_RAW["questions"][0], "question_type": "unknown"}]}
+    qs = validate_mcq(raw, {"c1"}, SOURCE_TEXT)
+    assert qs[0].question_type == "concept"
+
+
+def test_validate_mcq_question_type_missing_defaults_to_concept():
+    q = {k: v for k, v in VALID_MCQ_RAW["questions"][0].items() if k != "question_type"}
+    qs = validate_mcq({"questions": [q]}, {"c1"}, SOURCE_TEXT)
+    assert qs[0].question_type == "concept"
+
+
+# ─────────────────────────────────────────
+# Fill validation — core
 # ─────────────────────────────────────────
 
 def test_validate_fill_happy_path():
     questions = validate_fill(VALID_FILL_RAW, {"c1", "c2"}, SOURCE_TEXT)
     assert len(questions) == 1
     assert questions[0].answer == "Machine learning"
+    assert questions[0].level == 3
+    assert questions[0].question_type == "concept"
 
 
 def test_validate_fill_no_blank_skips():
     raw = {
         "questions": [
-            {"id": "f1", "sentence_with_blank": "No blank here.", "answer": "Answer", "concept_id": "c1"}
+            {"id": "f1", "sentence_with_blank": "No blank here.", "answer": "Answer", "concept_id": "c1",
+             "level": 3, "question_type": "concept"}
         ]
     }
     with pytest.raises(ValidationError):
@@ -171,8 +269,32 @@ def test_validate_fill_no_blank_skips():
 def test_validate_fill_empty_answer_skips():
     raw = {
         "questions": [
-            {"id": "f1", "sentence_with_blank": "___ is here.", "answer": "", "concept_id": "c1"}
+            {"id": "f1", "sentence_with_blank": "___ is here.", "answer": "", "concept_id": "c1",
+             "level": 3, "question_type": "concept"}
         ]
     }
     with pytest.raises(ValidationError):
         validate_fill(raw, {"c1"}, SOURCE_TEXT)
+
+
+# ─────────────────────────────────────────
+# Fill validation — level & question_type
+# ─────────────────────────────────────────
+
+def test_validate_fill_level_preserved():
+    raw = {"questions": [{**VALID_FILL_RAW["questions"][0], "level": 5}]}
+    qs = validate_fill(raw, {"c1"}, SOURCE_TEXT)
+    assert qs[0].level == 5
+
+
+def test_validate_fill_legacy_difficulty_hard():
+    q = {k: v for k, v in VALID_FILL_RAW["questions"][0].items() if k != "level"}
+    q["difficulty"] = "hard"
+    qs = validate_fill({"questions": [q]}, {"c1"}, SOURCE_TEXT)
+    assert qs[0].level == 4
+
+
+def test_validate_fill_question_type_application():
+    raw = {"questions": [{**VALID_FILL_RAW["questions"][0], "question_type": "application"}]}
+    qs = validate_fill(raw, {"c1"}, SOURCE_TEXT)
+    assert qs[0].question_type == "application"

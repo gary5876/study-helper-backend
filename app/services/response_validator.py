@@ -15,6 +15,8 @@ from app.models.schemas import (
     MCQQuestion,
     StudyNotes,
     StudySection,
+    _DIFFICULTY_TO_LEVEL,
+    _VALID_QUESTION_TYPES,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,31 @@ def _ensure_id(obj: dict) -> dict:
     if not obj.get("id"):
         obj["id"] = str(uuid.uuid4())
     return obj
+
+
+def _coerce_level(raw: object) -> int:
+    """
+    Convert a raw level value to a valid int in [1, 5].
+
+    Accepts:
+    - int / float already in range
+    - string digits ("3")
+    - legacy difficulty strings ("easy" → 2, "medium" → 3, "hard" → 4)
+    Falls back to 3 for anything unrecognisable.
+    """
+    if isinstance(raw, str) and raw in _DIFFICULTY_TO_LEVEL:
+        return _DIFFICULTY_TO_LEVEL[raw]
+    try:
+        return max(1, min(5, int(raw)))  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        return 3
+
+
+def _coerce_question_type(raw: object) -> str:
+    """Return a valid question_type, defaulting to 'concept'."""
+    if raw in _VALID_QUESTION_TYPES:
+        return str(raw)
+    return "concept"
 
 
 # ─────────────────────────────────────────
@@ -196,9 +223,9 @@ def validate_mcq(raw: dict, valid_concept_ids: set[str], source_text: str) -> li
             continue
         seen_questions.append(question_text)
 
-        difficulty = str(q.get("difficulty", "medium"))
-        if difficulty not in ("easy", "medium", "hard"):
-            difficulty = "medium"
+        # level and question_type — use coerce helpers (handle legacy difficulty strings too)
+        level = _coerce_level(q.get("level", q.get("difficulty", 3)))
+        question_type = _coerce_question_type(q.get("question_type"))
 
         validated.append(
             MCQQuestion(
@@ -213,7 +240,8 @@ def validate_mcq(raw: dict, valid_concept_ids: set[str], source_text: str) -> li
                 correct_answer=correct,  # type: ignore[arg-type]
                 explanation=explanation,
                 concept_id=concept_id,
-                difficulty=difficulty,  # type: ignore[arg-type]
+                level=level,
+                question_type=question_type,  # type: ignore[arg-type]
             )
         )
 
@@ -265,6 +293,9 @@ def validate_fill(raw: dict, valid_concept_ids: set[str], source_text: str) -> l
         if concept_id not in valid_concept_ids:
             concept_id = next(iter(valid_concept_ids), "")
 
+        level = _coerce_level(q.get("level", q.get("difficulty", 3)))
+        question_type = _coerce_question_type(q.get("question_type"))
+
         validated.append(
             FillQuestion(
                 id=q["id"],
@@ -273,6 +304,8 @@ def validate_fill(raw: dict, valid_concept_ids: set[str], source_text: str) -> l
                 acceptable_variants=variants,
                 hint=hint,
                 concept_id=concept_id,
+                level=level,
+                question_type=question_type,  # type: ignore[arg-type]
             )
         )
 

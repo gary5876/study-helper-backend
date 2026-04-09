@@ -4,7 +4,7 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 
 ---
 
-## 현재 상태 (2026-04-08)
+## 현재 상태 (2026-04-09)
 
 ### 완성된 기능
 
@@ -17,16 +17,19 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 - [x] **PDF 문제은행** — 업로드 시 SHA-256 해시 계산, PostgreSQL에 영구 저장, 동일 PDF 재업로드 시 LLM 호출 없이 즉시 반환
 - [x] 3단계 비동기 콘텐츠 생성 파이프라인 (Notes → MCQ 배치 → Fill 배치)
 - [x] Gemini MCQ/Fill 배치 분할 생성 (MCQ 5개/배치, Fill 8개/배치 — 토큰 한도 대응)
+- [x] **문제 레벨 1~5** — `difficulty: easy/medium/hard` 대신 정수 `level: 1~5` 체계. 레벨 정의: 1(기초암기)·2(개념이해)·3(시험최하)·4(표준시험)·5(고난도). 기존 저장 데이터 자동 변환 (easy→2, medium→3, hard→4)
+- [x] **문제 유형 분류** — `question_type: concept | application` (개념문제 / 실습문제). MCQ·Fill 모두 적용
+- [x] **생성 분포 상향** — L1:8% L2:12% L3:20% L4:35% L5:25% (기존 easy 30%/medium 50%/hard 20%에서 실전 시험 수준으로 상향)
 - [x] 진행률 폴링 (`/status`, 0~100%)
 - [x] Redis / 인메모리 세션 스토어 (2시간 TTL)
-- [x] 응답 검증 (중복 제거, 환각 탐지, 필드 보정)
+- [x] 응답 검증 (중복 제거, 환각 탐지, 필드 보정, level/question_type 범위 검증)
 - [x] 서킷 브레이커 (5회 연속 실패 → 60초 차단)
 - [x] 지수 백오프 재시도 (최대 2회)
 - [x] Rate Limiting (IP당 분당 30회)
 - [x] 구조화 JSON 로깅 + Prometheus 메트릭
 - [x] Docker / Docker Compose (PostgreSQL 서비스 포함)
 - [x] GitHub Actions CI/CD → AWS ECS 자동 배포
-- [x] 단위 테스트 50개 + 통합 테스트 14개
+- [x] 단위 테스트 77개 (response_validator 26개 포함) + 통합 테스트 14개
 
 ---
 
