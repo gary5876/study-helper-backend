@@ -133,6 +133,24 @@ async def create_session(
     return await store.create_session(user["user_id"], body)
 
 
+@router.delete("/sessions/{session_id}", status_code=204)
+async def delete_session(
+    session_id: str,
+    user: dict = Depends(require_current_user),
+    store: UserStore = Depends(get_user_store),
+):
+    """user_sessions 행과 관련 복습 일정을 삭제하고 메모리 store도 정리."""
+    deleted = await store.delete_session(user["user_id"], session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
+    # 메모리 store도 함께 정리 (실패해도 DB 삭제는 이미 성공한 상태라 무시)
+    try:
+        from app.services.session_store import get_store as get_session_store
+        await get_session_store().delete(session_id)
+    except Exception:
+        pass
+
+
 # ─────────────────────────────────────────
 # Review Schedule
 # ─────────────────────────────────────────

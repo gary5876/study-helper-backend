@@ -213,6 +213,19 @@ class UserStore:
         # asyncpg execute returns 'UPDATE <n>'
         return result.endswith(" 1")
 
+    async def delete_session(self, user_id: str, session_id: str) -> bool:
+        """user_sessions 행을 삭제. ON DELETE CASCADE로 user_review_schedule·
+        user_attempts도 함께 제거됨. 성공 시 True.
+        """
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM user_sessions "
+                "WHERE id = $1::uuid AND user_id = $2::uuid",
+                session_id, user_id,
+            )
+        return result.endswith(" 1")
+
     async def sync_sessions(self, user_id: str, sessions: list) -> int:
         if not sessions:
             return 0
