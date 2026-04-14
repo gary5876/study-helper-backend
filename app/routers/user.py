@@ -32,6 +32,7 @@ class SubjectResponse(BaseModel):
 
 
 class SessionCreate(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=36, pattern=r'^[0-9a-f-]{36}$')
     pdf_name: str = Field(min_length=1, max_length=255)
     pdf_hash: Optional[str] = Field(default=None, max_length=64, pattern=r'^[a-f0-9]{64}$')
     subject_id: Optional[str] = Field(default=None, max_length=36)

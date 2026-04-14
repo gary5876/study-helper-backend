@@ -119,16 +119,42 @@ class UserStore:
                 if not owner_check:
                     from fastapi import HTTPException
                     raise HTTPException(status_code=403, detail="해당 과목에 대한 접근 권한이 없습니다")
-            row = await conn.fetchrow(
-                "INSERT INTO user_sessions "
-                "(user_id, pdf_name, pdf_hash, subject_id, page_count, word_count, status) "
-                "VALUES ($1::uuid, $2, $3, $4::uuid, $5, $6, $7) "
-                "RETURNING id::text, pdf_name, pdf_hash, subject_id::text, "
-                "page_count, word_count, status, created_at, last_accessed",
-                user_id, body.pdf_name, body.pdf_hash,
-                subject_id, body.page_count, body.word_count, body.status,
-            )
+            explicit_id = getattr(body, "id", None)
+            if explicit_id:
+                row = await conn.fetchrow(
+                    "INSERT INTO user_sessions "
+                    "(id, user_id, pdf_name, pdf_hash, subject_id, page_count, word_count, status) "
+                    "VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid, $6, $7, $8) "
+                    "RETURNING id::text, pdf_name, pdf_hash, subject_id::text, "
+                    "page_count, word_count, status, created_at, last_accessed",
+                    explicit_id, user_id, body.pdf_name, body.pdf_hash,
+                    subject_id, body.page_count, body.word_count, body.status,
+                )
+            else:
+                row = await conn.fetchrow(
+                    "INSERT INTO user_sessions "
+                    "(user_id, pdf_name, pdf_hash, subject_id, page_count, word_count, status) "
+                    "VALUES ($1::uuid, $2, $3, $4::uuid, $5, $6, $7) "
+                    "RETURNING id::text, pdf_name, pdf_hash, subject_id::text, "
+                    "page_count, word_count, status, created_at, last_accessed",
+                    user_id, body.pdf_name, body.pdf_hash,
+                    subject_id, body.page_count, body.word_count, body.status,
+                )
         return dict(row)
+
+    async def update_session_status(self, user_id: str, session_id: str, status: str) -> bool:
+        """user_sessions 행의 status를 갱신. 성공 시 True."""
+        if status not in ("pending", "ready", "failed"):
+            raise ValueError(f"invalid status: {status}")
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE user_sessions SET status = $1 "
+                "WHERE id = $2::uuid AND user_id = $3::uuid",
+                status, session_id, user_id,
+            )
+        # asyncpg execute returns 'UPDATE <n>'
+        return result.endswith(" 1")
 
     async def sync_sessions(self, user_id: str, sessions: list) -> int:
         if not sessions:

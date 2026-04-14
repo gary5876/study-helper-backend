@@ -33,10 +33,21 @@ from app.services.prompt_builder import (
 from app.services.response_validator import validate_fill, validate_mcq, validate_notes
 from app.services.session_store import get_store
 from app.services.question_bank import get_cached, save_to_bank
+from app.services.user_store import get_user_store
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def _sync_user_session_status(user_id: str | None, session_id: str, status: str) -> None:
+    """user_sessions DB 행의 status도 같이 갱신 (로그인 사용자일 때만)."""
+    if not user_id:
+        return
+    try:
+        await get_user_store().update_session_status(user_id, session_id, status)
+    except Exception as exc:
+        logger.warning("user_sessions status sync 실패 (session=%s, status=%s): %s", session_id, status, exc)
 
 
 async def _run_generation(session_id: str, api_key: str, options: GenerateOptions | None, plan: str = "paid", lang: str = "ko"):
@@ -49,10 +60,15 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
         logger.error("Generation task: session %s not found.", session_id)
         return
 
+    async def _fail(msg: str) -> None:
+        await store.update_status(session_id, "failed", error_message=msg)
+        await _sync_user_session_status(record.user_id, session_id, "failed")
+
     # Check question bank cache first
     cached_json = await get_cached(record.pdf_hash)
     if cached_json:
         await store.update_status(session_id, "complete", progress_pct=100, result_json=cached_json)
+        await _sync_user_session_status(record.user_id, session_id, "ready")
         logger.info("Question bank cache hit for session %s (hash=%s)", session_id, record.pdf_hash[:12])
         return
 
@@ -60,7 +76,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     try:
         parsed = json.loads(record.result_json or "{}")
     except Exception:
-        await store.update_status(session_id, "failed", error_message="Failed to load parsed document.")
+        await _fail("Failed to load parsed document.")
         return
 
     full_text = parsed.get("full_text", "")
@@ -68,7 +84,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     section_count = max(1, len(sections))
 
     if not full_text:
-        await store.update_status(session_id, "failed", error_message="Document text is empty.")
+        await _fail("Document text is empty.")
         return
 
     # Determine question counts
@@ -97,7 +113,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
         else:
             notes_raw = await anthropic_generate(api_key, sys_notes, prompt_notes, max_tokens=4096, model=model)
     except GenerationError as exc:
-        await store.update_status(session_id, "failed", error_message=f"Notes generation failed: {exc.message}")
+        await _fail(f"Notes generation failed: {exc.message}")
         return
 
     await store.update_status(session_id, "processing", progress_pct=40)
@@ -106,7 +122,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     try:
         notes_obj = validate_notes(notes_raw, full_text)
     except ValidationError as exc:
-        await store.update_status(session_id, "failed", error_message=f"Notes validation failed: {exc.message}")
+        await _fail(f"Notes validation failed: {exc.message}")
         return
 
     notes_dict = notes_raw  # keep raw dict for prompt context
@@ -121,7 +137,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
         else:
             mcq_raw = await anthropic_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192, model=model)
     except GenerationError as exc:
-        await store.update_status(session_id, "failed", error_message=f"MCQ generation failed: {exc.message}")
+        await _fail(f"MCQ generation failed: {exc.message}")
         return
 
     await store.update_status(session_id, "processing", progress_pct=70)
@@ -136,7 +152,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
         else:
             fill_raw = await anthropic_generate(api_key, sys_fill, prompt_fill, max_tokens=2048, model=model)
     except GenerationError as exc:
-        await store.update_status(session_id, "failed", error_message=f"Fill generation failed: {exc.message}")
+        await _fail(f"Fill generation failed: {exc.message}")
         return
 
     await store.update_status(session_id, "processing", progress_pct=85)
@@ -148,7 +164,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
         mcq_list = validate_mcq(mcq_raw, valid_concept_ids, full_text)
         fill_list = validate_fill(fill_raw, valid_concept_ids, full_text)
     except ValidationError as exc:
-        await store.update_status(session_id, "failed", error_message=f"Validation failed: {exc.message}")
+        await _fail(f"Validation failed: {exc.message}")
         return
 
     # Build final StudyContent
@@ -172,6 +188,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
 
     content_json = content.model_dump_json()
     await store.update_status(session_id, "complete", progress_pct=100, result_json=content_json)
+    await _sync_user_session_status(record.user_id, session_id, "ready")
     logger.info("Generation complete for session %s: %d MCQ, %d fill", session_id, len(mcq_list), len(fill_list))
 
     # Persist to question bank for future cache hits

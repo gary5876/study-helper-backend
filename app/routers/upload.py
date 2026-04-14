@@ -114,6 +114,7 @@ async def upload_pdf(
             from app.routers.user import SessionCreate
             user_store = get_user_store()
             await user_store.create_session(user["user_id"], SessionCreate(
+                id=session_id,
                 pdf_name=filename,
                 pdf_hash=pdf_hash,
                 subject_id=subject_id,
