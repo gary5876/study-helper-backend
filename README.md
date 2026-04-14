@@ -4,7 +4,7 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 
 ---
 
-## 현재 상태 (2026-04-09)
+## 현재 상태 (2026-04-14)
 
 ### 완성된 기능
 
@@ -30,6 +30,13 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 - [x] Docker / Docker Compose (PostgreSQL 서비스 포함)
 - [x] GitHub Actions CI/CD → AWS ECS 자동 배포
 - [x] 단위 테스트 77개 (response_validator 26개 포함) + 통합 테스트 14개
+- [x] **Supabase RS256 토큰 JWKS 검증** (2026-04-14, `c0d73ac`) — `app/core/auth.py`에서 토큰 헤더 `alg`를 먼저 읽어 비대칭(RS/ES/PS)이면 `iss` 기반 JWKS 엔드포인트에서 공개키를 받아 `kid` 매칭 후 검증, HS256이면 기존 `SUPABASE_JWT_SECRET` 경로 유지. JWKS 1시간 캐시 + `kid` 미스 시 1회 재조회로 키 로테이션 대응. JWKS fetch 실패는 503으로 반환
+- [x] **세션 소유권 검증** (2026-04-14, `2dcb6ed`) — `/generate`·`/status`·`/result`·`/session` 전 엔드포인트에 `user_id` 기반 접근 제어
+- [x] **입력 검증 강화** (2026-04-14) — `app/core/validators.py` 신규(UUID/API 키 형식), `app/models/schemas.py`에 Pydantic 필드 제약(길이·범위·패턴) 전면 적용
+- [x] **보안 헤더 미들웨어** (2026-04-14) — `app/main.py`에 HSTS·X-Frame-Options·`X-Content-Type-Options: nosniff` 등 추가, CORS `allow_methods`/`allow_headers` 화이트리스트화
+- [x] **에러 메시지 정보 노출 차단** (2026-04-14) — 에러 메시지에서 세션 ID 등 식별자 제거, 업로드 파일명 sanitize
+- [x] **DB 자격증명·마이그레이션 정비** (2026-04-14) — `DATABASE_URL` 필수화, `docker-compose.yml`의 `POSTGRES_PASSWORD`를 `.env` 기반으로 전환, `user_store` SQL `::uuid` 캐스팅 및 과목 소유권 선검증, `migrations/001~003` 정비 및 `migrations/README.md` 추가
+- [x] **세션 ID 단일화 & 상태 동기화** (2026-04-14, `d488f43`·`821ab87`) — 메모리 `session_store.session_id`와 Postgres `user_sessions.id`가 서로 달라 웹 대시보드가 영원히 pending으로 남던 문제 해결. `SessionCreate`에 optional `id` 필드, `user_store.upsert_session`으로 `ON CONFLICT (user_id, pdf_hash) DO UPDATE` 처리(재업로드 시 기존 row 재사용해 복습 일정·시도 내역 FK 보존), `/upload`가 upsert 반환 id를 메모리 레코드에도 동일하게 사용. `/generate` 완료·실패 시 `user_store.update_session_status`로 DB 행을 `ready`·`failed`로 동기화, 실패 경로 7곳을 `_fail()` 헬퍼로 통합
 
 ---
 
