@@ -142,6 +142,63 @@ class UserStore:
                 )
         return dict(row)
 
+    async def upsert_session(self, user_id: str, body) -> dict:
+        """user_sessions에 INSERT하거나, (user_id, pdf_hash) 충돌 시 기존 행을
+        재사용하고 메타데이터/상태를 갱신. 반환되는 id가 권위 있는 session_id.
+        """
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            subject_id = body.subject_id  # may be None
+            if subject_id:
+                owner_check = await conn.fetchval(
+                    "SELECT 1 FROM user_subjects WHERE id = $1::uuid AND user_id = $2::uuid",
+                    subject_id, user_id,
+                )
+                if not owner_check:
+                    from fastapi import HTTPException
+                    raise HTTPException(status_code=403, detail="해당 과목에 대한 접근 권한이 없습니다")
+
+            explicit_id = getattr(body, "id", None)
+            # pdf_hash가 없으면 upsert가 동작하지 않으므로 일반 insert 경로로 폴백.
+            if not body.pdf_hash:
+                return await self.create_session(user_id, body)
+
+            if explicit_id:
+                row = await conn.fetchrow(
+                    "INSERT INTO user_sessions "
+                    "(id, user_id, pdf_name, pdf_hash, subject_id, page_count, word_count, status) "
+                    "VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid, $6, $7, $8) "
+                    "ON CONFLICT (user_id, pdf_hash) DO UPDATE SET "
+                    "  pdf_name = EXCLUDED.pdf_name, "
+                    "  subject_id = EXCLUDED.subject_id, "
+                    "  page_count = EXCLUDED.page_count, "
+                    "  word_count = EXCLUDED.word_count, "
+                    "  status = EXCLUDED.status, "
+                    "  last_accessed = now() "
+                    "RETURNING id::text, pdf_name, pdf_hash, subject_id::text, "
+                    "page_count, word_count, status, created_at, last_accessed",
+                    explicit_id, user_id, body.pdf_name, body.pdf_hash,
+                    subject_id, body.page_count, body.word_count, body.status,
+                )
+            else:
+                row = await conn.fetchrow(
+                    "INSERT INTO user_sessions "
+                    "(user_id, pdf_name, pdf_hash, subject_id, page_count, word_count, status) "
+                    "VALUES ($1::uuid, $2, $3, $4::uuid, $5, $6, $7) "
+                    "ON CONFLICT (user_id, pdf_hash) DO UPDATE SET "
+                    "  pdf_name = EXCLUDED.pdf_name, "
+                    "  subject_id = EXCLUDED.subject_id, "
+                    "  page_count = EXCLUDED.page_count, "
+                    "  word_count = EXCLUDED.word_count, "
+                    "  status = EXCLUDED.status, "
+                    "  last_accessed = now() "
+                    "RETURNING id::text, pdf_name, pdf_hash, subject_id::text, "
+                    "page_count, word_count, status, created_at, last_accessed",
+                    user_id, body.pdf_name, body.pdf_hash,
+                    subject_id, body.page_count, body.word_count, body.status,
+                )
+        return dict(row)
+
     async def update_session_status(self, user_id: str, session_id: str, status: str) -> bool:
         """user_sessions 행의 status를 갱신. 성공 시 True."""
         if status not in ("pending", "ready", "failed"):

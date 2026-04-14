@@ -77,8 +77,29 @@ async def upload_pdf(
     except PDFParseError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-    session_id = str(uuid.uuid4())
+    tentative_id = str(uuid.uuid4())
     pdf_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    # 로그인 상태면 user_sessions에 upsert하고, 반환된 id를 권위 있는 session_id로 사용.
+    # 같은 PDF 재업로드 시 기존 행의 id를 그대로 재사용하여 메모리 store와 DB row가
+    # 항상 동일한 id를 공유하도록 한다.
+    session_id = tentative_id
+    if user:
+        try:
+            from app.routers.user import SessionCreate
+            user_store = get_user_store()
+            row = await user_store.upsert_session(user["user_id"], SessionCreate(
+                id=tentative_id,
+                pdf_name=filename,
+                pdf_hash=pdf_hash,
+                subject_id=subject_id,
+                page_count=doc.page_count,
+                word_count=doc.word_count,
+                status="pending",
+            ))
+            session_id = row["id"]
+        except Exception as exc:
+            logger.warning("Cloud session save failed for user %s: %s", user["user_id"], exc)
 
     # Store record (PDF bytes not persisted server-side in dev mode — just metadata)
     record = SessionRecord(
@@ -107,23 +128,6 @@ async def upload_pdf(
 
     store = get_store()
     await store.save(record_with_text)
-
-    # 로그인 상태면 클라우드에도 세션 저장
-    if user:
-        try:
-            from app.routers.user import SessionCreate
-            user_store = get_user_store()
-            await user_store.create_session(user["user_id"], SessionCreate(
-                id=session_id,
-                pdf_name=filename,
-                pdf_hash=pdf_hash,
-                subject_id=subject_id,
-                page_count=doc.page_count,
-                word_count=doc.word_count,
-                status="pending",
-            ))
-        except Exception as exc:
-            logger.warning("Cloud session save failed for user %s: %s", user["user_id"], exc)
 
     if doc.warning:
         logger.warning("Upload %s: %s", session_id, doc.warning)
