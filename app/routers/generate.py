@@ -5,11 +5,13 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from typing import Optional
 
+from app.core.auth import get_current_user
 from app.core.config import get_settings
 from app.core.exceptions import GenerationError, ValidationError
+from app.core.validators import is_valid_uuid, validate_api_key
 from app.models.schemas import (
     ContentMetadata,
     DeleteResponse,
@@ -186,28 +188,44 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
 # Endpoints
 # ─────────────────────────────────────────
 
+def _check_ownership(record, user: dict | None) -> None:
+    """Raise 403 if the caller is not allowed to access this session."""
+    if record.user_id is None:
+        # Guest session: only unauthenticated (guest) callers may access
+        if user is not None:
+            raise HTTPException(status_code=403, detail="해당 세션에 대한 접근 권한이 없습니다")
+    else:
+        # Owned session: only the owner may access
+        if user is None or user["user_id"] != record.user_id:
+            raise HTTPException(status_code=403, detail="해당 세션에 대한 접근 권한이 없습니다")
+
+
 @router.post("/generate", response_model=GenerateResponse)
 async def start_generation(
     body: GenerateRequest,
     background_tasks: BackgroundTasks,
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+    user: Optional[dict] = Depends(get_current_user),
 ):
     """Kick off async content generation for an uploaded session.
 
     Pass the Anthropic API key via the `X-API-Key` header (preferred) or the `api_key` body field.
     """
     resolved_key = (x_api_key or body.api_key or "").strip()
-    if body.plan == "paid" and (not resolved_key or len(resolved_key) < 10):
+    if body.plan == "paid" and not validate_api_key(resolved_key, "paid"):
         raise HTTPException(status_code=400, detail="A valid Anthropic API key is required.")
-    if body.plan == "gpt" and (not resolved_key or len(resolved_key) < 10):
+    if body.plan == "gpt" and not validate_api_key(resolved_key, "gpt"):
         raise HTTPException(status_code=400, detail="A valid OpenAI API key is required.")
-    if body.plan == "timely" and (not resolved_key or len(resolved_key) < 10):
+    if body.plan == "timely" and not validate_api_key(resolved_key, "timely"):
         raise HTTPException(status_code=400, detail="A valid TimelyGPT API key is required.")
 
+    if not is_valid_uuid(body.session_id):
+        raise HTTPException(status_code=400, detail="Invalid session ID format.")
     store = get_store()
     record = await store.get(body.session_id)
     if record is None:
-        raise HTTPException(status_code=404, detail=f"Session '{body.session_id}' not found.")
+        raise HTTPException(status_code=404, detail="Session not found.")
+    _check_ownership(record, user)
     if record.status == "complete":
         return GenerateResponse(session_id=body.session_id, status="complete")
     if record.status == "processing":
@@ -218,12 +236,15 @@ async def start_generation(
 
 
 @router.get("/status/{session_id}", response_model=StatusResponse)
-async def get_status(session_id: str):
+async def get_status(session_id: str, user: Optional[dict] = Depends(get_current_user)):
     """Poll generation progress."""
+    if not is_valid_uuid(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session ID format.")
     store = get_store()
     record = await store.get(session_id)
     if record is None:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+        raise HTTPException(status_code=404, detail="Session not found.")
+    _check_ownership(record, user)
     return StatusResponse(
         session_id=session_id,
         status=record.status,  # type: ignore[arg-type]
@@ -233,12 +254,15 @@ async def get_status(session_id: str):
 
 
 @router.get("/result/{session_id}", response_model=StudyContent)
-async def get_result(session_id: str):
+async def get_result(session_id: str, user: Optional[dict] = Depends(get_current_user)):
     """Retrieve the completed StudyContent. Returns 202 if still processing."""
+    if not is_valid_uuid(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session ID format.")
     store = get_store()
     record = await store.get(session_id)
     if record is None:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+        raise HTTPException(status_code=404, detail="Session not found.")
+    _check_ownership(record, user)
     if record.status == "processing":
         raise HTTPException(status_code=202, detail="Generation still in progress.")
     if record.status == "failed":
@@ -251,12 +275,19 @@ async def get_result(session_id: str):
     try:
         return StudyContent.model_validate_json(record.result_json)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to parse result: {exc}") from exc
+        logger.error("Failed to parse result for session %s: %s", session_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to parse result.") from exc
 
 
 @router.delete("/session/{session_id}", response_model=DeleteResponse)
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, user: Optional[dict] = Depends(get_current_user)):
     """Delete a session and its associated data."""
+    if not is_valid_uuid(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session ID format.")
     store = get_store()
+    record = await store.get(session_id)
+    if record is None:
+        return DeleteResponse(deleted=False, session_id=session_id)
+    _check_ownership(record, user)
     deleted = await store.delete(session_id)
     return DeleteResponse(deleted=deleted, session_id=session_id)

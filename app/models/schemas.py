@@ -153,9 +153,9 @@ class GenerateRequest(BaseModel):
 
 
 class GenerateOptions(BaseModel):
-    mcq_count: Optional[int] = None   # None = auto-calculate
-    fill_count: Optional[int] = None  # None = auto-calculate
-    model: Optional[str] = None       # None = use server default
+    mcq_count: Optional[int] = Field(default=None, ge=1, le=50)
+    fill_count: Optional[int] = Field(default=None, ge=1, le=50)
+    model: Optional[str] = Field(default=None, max_length=100, pattern=r'^[a-zA-Z0-9.\-_]+$')
 
 
 class GenerateResponse(BaseModel):

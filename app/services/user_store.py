@@ -53,7 +53,7 @@ class UserStore:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id::text, name, color, created_at FROM user_subjects "
-                "WHERE user_id = $1 ORDER BY created_at",
+                "WHERE user_id = $1::uuid ORDER BY created_at",
                 user_id,
             )
         return [dict(r) for r in rows]
@@ -62,7 +62,7 @@ class UserStore:
         pool = self._require_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "INSERT INTO user_subjects (user_id, name, color) VALUES ($1, $2, $3) "
+                "INSERT INTO user_subjects (user_id, name, color) VALUES ($1::uuid, $2, $3) "
                 "ON CONFLICT (user_id, name) DO UPDATE SET color = EXCLUDED.color "
                 "RETURNING id::text, name, color, created_at",
                 user_id, name, color,
@@ -73,7 +73,7 @@ class UserStore:
         pool = self._require_pool()
         async with pool.acquire() as conn:
             result = await conn.execute(
-                "DELETE FROM user_subjects WHERE id = $1::uuid AND user_id = $2",
+                "DELETE FROM user_subjects WHERE id = $1::uuid AND user_id = $2::uuid",
                 subject_id, user_id,
             )
         return result.split()[-1] != "0"
@@ -86,7 +86,7 @@ class UserStore:
         async with pool.acquire() as conn:
             for s in subjects:
                 await conn.execute(
-                    "INSERT INTO user_subjects (user_id, name, color) VALUES ($1, $2, $3) "
+                    "INSERT INTO user_subjects (user_id, name, color) VALUES ($1::uuid, $2, $3) "
                     "ON CONFLICT (user_id, name) DO NOTHING",
                     user_id, s.name, s.color,
                 )
@@ -101,7 +101,7 @@ class UserStore:
             rows = await conn.fetch(
                 "SELECT id::text, pdf_name, pdf_hash, subject_id::text, "
                 "page_count, word_count, status, created_at, last_accessed "
-                "FROM user_sessions WHERE user_id = $1 ORDER BY created_at DESC",
+                "FROM user_sessions WHERE user_id = $1::uuid ORDER BY created_at DESC",
                 user_id,
             )
         return [dict(r) for r in rows]
@@ -110,10 +110,19 @@ class UserStore:
         pool = self._require_pool()
         async with pool.acquire() as conn:
             subject_id = body.subject_id  # may be None
+            # Verify subject ownership if provided
+            if subject_id:
+                owner_check = await conn.fetchval(
+                    "SELECT 1 FROM user_subjects WHERE id = $1::uuid AND user_id = $2::uuid",
+                    subject_id, user_id,
+                )
+                if not owner_check:
+                    from fastapi import HTTPException
+                    raise HTTPException(status_code=403, detail="해당 과목에 대한 접근 권한이 없습니다")
             row = await conn.fetchrow(
                 "INSERT INTO user_sessions "
                 "(user_id, pdf_name, pdf_hash, subject_id, page_count, word_count, status) "
-                "VALUES ($1, $2, $3, $4::uuid, $5, $6, $7) "
+                "VALUES ($1::uuid, $2, $3, $4::uuid, $5, $6, $7) "
                 "RETURNING id::text, pdf_name, pdf_hash, subject_id::text, "
                 "page_count, word_count, status, created_at, last_accessed",
                 user_id, body.pdf_name, body.pdf_hash,
@@ -127,12 +136,24 @@ class UserStore:
         pool = self._require_pool()
         count = 0
         async with pool.acquire() as conn:
+            # Pre-validate subject ownership for all referenced subject_ids
+            subject_ids = {s.subject_id for s in sessions if s.subject_id}
+            if subject_ids:
+                owned = await conn.fetch(
+                    "SELECT id::text FROM user_subjects WHERE user_id = $1::uuid AND id = ANY($2::uuid[])",
+                    user_id, list(subject_ids),
+                )
+                owned_ids = {r["id"] for r in owned}
+                invalid = subject_ids - owned_ids
+                if invalid:
+                    from fastapi import HTTPException
+                    raise HTTPException(status_code=403, detail="해당 과목에 대한 접근 권한이 없습니다")
             for s in sessions:
                 await conn.execute(
                     "INSERT INTO user_sessions "
                     "(user_id, pdf_name, pdf_hash, subject_id, page_count, word_count, status) "
-                    "VALUES ($1, $2, $3, $4::uuid, $5, $6, $7) "
-                    "ON CONFLICT DO NOTHING",
+                    "VALUES ($1::uuid, $2, $3, $4::uuid, $5, $6, $7) "
+                    "ON CONFLICT (user_id, pdf_hash) DO NOTHING",
                     user_id, s.pdf_name, s.pdf_hash,
                     s.subject_id, s.page_count, s.word_count, s.status,
                 )
@@ -149,7 +170,7 @@ class UserStore:
                 "SELECT id::text, session_id::text, question_id, question_type, "
                 "interval_days, next_review_at, ease_factor, repetitions, status "
                 "FROM user_review_schedule "
-                "WHERE user_id = $1 AND next_review_at <= $2 AND status != 'done' "
+                "WHERE user_id = $1::uuid AND next_review_at <= $2 AND status != 'done' "
                 "ORDER BY next_review_at",
                 user_id, now,
             )
@@ -162,8 +183,8 @@ class UserStore:
                 "INSERT INTO user_review_schedule "
                 "(user_id, session_id, question_id, question_type, "
                 "interval_days, next_review_at, ease_factor, repetitions, status) "
-                "VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9) "
-                "ON CONFLICT (session_id, question_id) DO UPDATE SET "
+                "VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9) "
+                "ON CONFLICT (user_id, session_id, question_id) DO UPDATE SET "
                 "interval_days = EXCLUDED.interval_days, "
                 "next_review_at = EXCLUDED.next_review_at, "
                 "ease_factor = EXCLUDED.ease_factor, "
@@ -188,8 +209,8 @@ class UserStore:
                     "INSERT INTO user_review_schedule "
                     "(user_id, session_id, question_id, question_type, "
                     "interval_days, next_review_at, ease_factor, repetitions, status) "
-                    "VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9) "
-                    "ON CONFLICT (session_id, question_id) DO NOTHING",
+                    "VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9) "
+                    "ON CONFLICT (user_id, session_id, question_id) DO NOTHING",
                     user_id, r.session_id, r.question_id, r.question_type,
                     r.interval_days, r.next_review_at,
                     r.ease_factor, r.repetitions, r.status,

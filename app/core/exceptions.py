@@ -28,7 +28,8 @@ class ValidationError(Exception):
 
 class SessionNotFoundError(Exception):
     def __init__(self, session_id: str):
-        self.message = f"Session '{session_id}' not found or expired"
+        self.message = "Session not found or expired"
+        self._session_id = session_id  # kept for server-side logging only
         super().__init__(self.message)
 
 

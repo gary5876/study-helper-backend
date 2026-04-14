@@ -35,7 +35,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Rate limiter (keyed by remote IP)
+# Rate limiter (keyed by remote IP) — shared instance, also used by routers
 limiter = Limiter(key_func=get_remote_address, default_limits=[f"{settings.RATE_LIMIT_PER_MINUTE}/minute"])
 
 
@@ -48,6 +48,8 @@ async def lifespan(app: FastAPI):
         tls_enabled=settings.REDIS_TLS_ENABLED,
     )
     if settings.ENVIRONMENT != "test":
+        if not settings.DATABASE_URL:
+            raise RuntimeError("DATABASE_URL must be set for non-test environments")
         await init_question_bank(settings.DATABASE_URL)
     if settings.ENVIRONMENT != "test" and settings.SUPABASE_DB_URL:
         await init_user_store(settings.SUPABASE_DB_URL)
@@ -74,8 +76,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"],
 )
 
 # Request ID middleware — injects a unique X-Request-ID header for tracing
@@ -84,6 +86,19 @@ async def request_id_middleware(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
+    return response
+
+
+# Security headers middleware
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if settings.ENVIRONMENT == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
     return response
 
 # Custom exception handlers

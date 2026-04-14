@@ -15,8 +15,8 @@ class Settings(BaseSettings):
     AWS_REGION: str = "ap-northeast-2"
     AWS_S3_BUCKET: str = "fundamentals-pdf-temp"
 
-    # PostgreSQL (question bank)
-    DATABASE_URL: str = "postgresql://study@localhost:5432/studyhelper"
+    # PostgreSQL (question bank) — REQUIRED, set via .env
+    DATABASE_URL: str = ""
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379"

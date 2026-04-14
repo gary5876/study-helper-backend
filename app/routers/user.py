@@ -6,7 +6,7 @@ from typing import Optional
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.auth import require_current_user
 from app.services.user_store import UserStore, get_user_store
@@ -20,8 +20,8 @@ router = APIRouter(prefix="/user", tags=["user"])
 # ─────────────────────────────────────────
 
 class SubjectCreate(BaseModel):
-    name: str
-    color: str = "#6c63ff"
+    name: str = Field(min_length=1, max_length=50)
+    color: str = Field(default="#6c63ff", pattern=r'^#[0-9a-fA-F]{6}$')
 
 
 class SubjectResponse(BaseModel):
@@ -32,12 +32,12 @@ class SubjectResponse(BaseModel):
 
 
 class SessionCreate(BaseModel):
-    pdf_name: str
-    pdf_hash: Optional[str] = None
-    subject_id: Optional[str] = None
-    page_count: int = 0
-    word_count: int = 0
-    status: str = "pending"
+    pdf_name: str = Field(min_length=1, max_length=255)
+    pdf_hash: Optional[str] = Field(default=None, max_length=64, pattern=r'^[a-f0-9]{64}$')
+    subject_id: Optional[str] = Field(default=None, max_length=36)
+    page_count: int = Field(default=0, ge=0, le=10000)
+    word_count: int = Field(default=0, ge=0, le=10_000_000)
+    status: str = Field(default="pending", pattern=r'^(pending|ready|failed)$')
 
 
 class SessionResponse(BaseModel):
@@ -53,14 +53,14 @@ class SessionResponse(BaseModel):
 
 
 class ReviewScheduleUpsert(BaseModel):
-    session_id: str
-    question_id: str
-    question_type: str
-    interval_days: int = 1
+    session_id: str = Field(max_length=36)
+    question_id: str = Field(max_length=36)
+    question_type: str = Field(pattern=r'^(mcq|fill)$')
+    interval_days: int = Field(default=1, ge=1, le=365)
     next_review_at: datetime
-    ease_factor: float = 2.5
-    repetitions: int = 0
-    status: str = "pending"
+    ease_factor: float = Field(default=2.5, ge=1.0, le=5.0)
+    repetitions: int = Field(default=0, ge=0, le=100)
+    status: str = Field(default="pending", pattern=r'^(pending|mastered|done)$')
 
 
 class ReviewScheduleResponse(ReviewScheduleUpsert):

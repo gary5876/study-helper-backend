@@ -24,6 +24,7 @@ class SessionRecord:
     word_count: int
     s3_key: str  # key in S3 (or local path in dev)
     pdf_hash: str = ""  # SHA-256 of raw PDF bytes for question bank lookup
+    user_id: Optional[str] = None  # owner (Supabase uid); None = guest
     status: Literal["uploaded", "processing", "complete", "failed"] = "uploaded"
     progress_pct: int = 0
     error_message: Optional[str] = None
