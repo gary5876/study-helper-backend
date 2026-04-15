@@ -70,10 +70,20 @@ async def save_to_bank(
     page_count: int,
     word_count: int,
     content_json: str,
-) -> None:
-    """Persist generated content. Silently skips if DB is unavailable."""
-    if not _pool or not pdf_hash:
-        return
+) -> bool:
+    """Persist generated content as shared cache. Returns True on success.
+
+    이 함수는 **best-effort**다. 실패해도 호출자는 진행을 중단하면 안 된다
+    (primary 저장소는 user_sessions.result_json이고 이미 커밋된 상태여야 함).
+    다만 실패는 logger.error로 명확히 남겨 관측 가능하게 한다 — 과거처럼 warning
+    으로 삼키지 않는다.
+    """
+    if not _pool:
+        logger.error("QuestionBank: save skipped — pool not initialized (pdf_hash=%s)", pdf_hash[:12] if pdf_hash else "-")
+        return False
+    if not pdf_hash:
+        logger.error("QuestionBank: save skipped — empty pdf_hash")
+        return False
     try:
         async with _pool.acquire() as conn:
             await conn.execute(
@@ -85,5 +95,7 @@ async def save_to_bank(
                 pdf_hash, pdf_name, page_count, word_count, content_json,
             )
         logger.info("QuestionBank: saved pdf_hash=%s (%s)", pdf_hash[:12], pdf_name)
+        return True
     except Exception as exc:
-        logger.warning("QuestionBank.save_to_bank failed: %s", exc)
+        logger.error("QuestionBank.save_to_bank failed (pdf_hash=%s): %s", pdf_hash[:12], exc)
+        return False

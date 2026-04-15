@@ -34,14 +34,16 @@ async def test_get_cached_returns_none_for_empty_hash():
 
 
 @pytest.mark.asyncio
-async def test_save_to_bank_silently_skips_when_pool_is_none():
-    # Should not raise
-    await qb.save_to_bank("abc123", "doc.pdf", 5, 200, '{"ok":true}')
+async def test_save_to_bank_returns_false_when_pool_is_none():
+    """Pool 없음 = best-effort 캐시 저장 실패. False 반환 (예외 아님)."""
+    result = await qb.save_to_bank("abc123", "doc.pdf", 5, 200, '{"ok":true}')
+    assert result is False
 
 
 @pytest.mark.asyncio
-async def test_save_to_bank_silently_skips_for_empty_hash():
-    await qb.save_to_bank("", "doc.pdf", 5, 200, '{"ok":true}')
+async def test_save_to_bank_returns_false_for_empty_hash():
+    result = await qb.save_to_bank("", "doc.pdf", 5, 200, '{"ok":true}')
+    assert result is False
 
 
 # ─────────────────────────────────────────
@@ -103,8 +105,9 @@ async def test_save_to_bank_executes_insert():
     pool, conn = _make_mock_pool()
     qb._pool = pool
 
-    await qb.save_to_bank("deadbeef", "notes.pdf", 10, 500, '{"ok":true}')
+    result = await qb.save_to_bank("deadbeef", "notes.pdf", 10, 500, '{"ok":true}')
 
+    assert result is True
     conn.execute.assert_awaited_once()
     call_args = conn.execute.call_args[0]
     assert "INSERT INTO question_bank" in call_args[0]
@@ -126,10 +129,12 @@ async def test_get_cached_swallows_db_error():
 
 
 @pytest.mark.asyncio
-async def test_save_to_bank_swallows_db_error():
+async def test_save_to_bank_swallows_db_error_and_returns_false():
+    """DB 예외는 호출자에게 전파되지 않아야 하지만, 이제 False를 반환해
+    관측(logger.error)이 가능해야 한다."""
     pool, conn = _make_mock_pool()
     conn.execute = AsyncMock(side_effect=Exception("connection lost"))
     qb._pool = pool
 
-    # Should not raise
-    await qb.save_to_bank("deadbeef", "doc.pdf", 5, 200, '{"ok":true}')
+    result = await qb.save_to_bank("deadbeef", "doc.pdf", 5, 200, '{"ok":true}')
+    assert result is False
