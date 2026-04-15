@@ -4,7 +4,7 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 
 ---
 
-## 현재 상태 (2026-04-14)
+## 현재 상태 (2026-04-15)
 
 ### 완성된 기능
 
@@ -38,6 +38,8 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 - [x] **DB 자격증명·마이그레이션 정비** (2026-04-14) — `DATABASE_URL` 필수화, `docker-compose.yml`의 `POSTGRES_PASSWORD`를 `.env` 기반으로 전환, `user_store` SQL `::uuid` 캐스팅 및 과목 소유권 선검증, `migrations/001~003` 정비 및 `migrations/README.md` 추가
 - [x] **세션 ID 단일화 & 상태 동기화** (2026-04-14, `d488f43`·`821ab87`) — 메모리 `session_store.session_id`와 Postgres `user_sessions.id`가 서로 달라 웹 대시보드가 영원히 pending으로 남던 문제 해결. `SessionCreate`에 optional `id` 필드, `user_store.upsert_session`으로 `ON CONFLICT (user_id, pdf_hash) DO UPDATE` 처리(재업로드 시 기존 row 재사용해 복습 일정·시도 내역 FK 보존), `/upload`가 upsert 반환 id를 메모리 레코드에도 동일하게 사용. `/generate` 완료·실패 시 `user_store.update_session_status`로 DB 행을 `ready`·`failed`로 동기화, 실패 경로 7곳을 `_fail()` 헬퍼로 통합
 - [x] **`DELETE /user/sessions/{id}` 엔드포인트** (2026-04-14) — `user_store.delete_session`이 `user_sessions` 행 제거(복습 일정·시도 내역은 `ON DELETE CASCADE`로 함께 삭제), 메모리 `session_store`도 best-effort 정리. 웹 대시보드 휴지통 버튼에서 사용
+- [x] **모바일 Supabase Auth 수용** (2026-04-15) — 백엔드 코드 변경 없음. 모바일이 `@supabase/supabase-js`로 발급받은 access token을 Bearer 헤더로 부착하면 기존 `core/auth.py`가 JWKS/HS256 분기 검증으로 그대로 수용. `/user/sync`는 로컬 SQLite → 클라우드 최초 업로드 경로로 재활용 (모바일 `migration.ts`에서 SecureStore `cloud_sync_completed_at` 플래그로 1회 실행)
+- [x] **세션 영구 pending 버그 종합 수정** (2026-04-15) — 증상: 생성이 끝난 세션이 대시보드에서 계속 "생성 중"으로 남고 `/study/{id}` 재진입 불가. 원인: `_sync_user_session_status`가 예외·0 row matched를 조용히 삼켜 memory `complete` vs DB `pending` 불일치가 영구화. 수정: (1) sync를 bool 반환으로 바꾸고 실패 시 `logger.error` + memory store를 `failed`로 전이시키는 `_finalize_ready` 헬퍼 도입, (2) `upsert_session`의 `ON CONFLICT DO UPDATE` 절에 `status = CASE WHEN user_sessions.status IN ('ready','failed') THEN user_sessions.status ELSE EXCLUDED.status END` 로 재업로드 다운그레이드 차단, (3) `/result`에 memory miss 시 `user_sessions.pdf_hash → question_bank.content_json` fallback을 추가해 memory TTL·재시작과 무관하게 재진입 가능(두 DB 풀 분리 환경 대응), (4) `get_sessions` self-heal을 user_store 풀에서 pending pdf_hash 수집 → question_bank 풀에서 매치 조회 → user_store 풀에서 UPDATE 의 3단계 크로스 DB 흐름으로 재작성. `documents/problem/2026-04-15-session-stuck-pending.md`에 8개 가설 검증 기록
 
 ---
 
