@@ -104,6 +104,55 @@ class UserStore:
                 "FROM user_sessions WHERE user_id = $1::uuid ORDER BY created_at DESC",
                 user_id,
             )
+
+        # Self-heal (크로스 DB 대응): pending 세션 중 question_bank 에 이미 결과가
+        # 캐시된 것(= 과거 생성이 성공했으나 sync 실패/다운그레이드로 pending에 갇힌
+        # 행)을 ready 로 승격. question_bank 와 user_sessions 이 서로 다른 DB 풀일
+        # 수 있으므로 각각 조회한 뒤 매치된 id 만 별도 UPDATE.
+        pending_ids: list[str] = []
+        pending_hashes: list[str] = []
+        for r in rows:
+            if r["status"] == "pending" and r["pdf_hash"]:
+                pending_ids.append(r["id"])
+                pending_hashes.append(r["pdf_hash"])
+
+        if pending_hashes:
+            try:
+                from app.services.question_bank import _pool as qb_pool  # type: ignore
+                ready_hashes: set[str] = set()
+                if qb_pool is not None:
+                    async with qb_pool.acquire() as qb_conn:
+                        qb_rows = await qb_conn.fetch(
+                            "SELECT pdf_hash FROM question_bank WHERE pdf_hash = ANY($1::text[])",
+                            pending_hashes,
+                        )
+                        ready_hashes = {r["pdf_hash"] for r in qb_rows}
+                if ready_hashes:
+                    heal_ids = [
+                        rid for rid, h in zip(pending_ids, pending_hashes)
+                        if h in ready_hashes
+                    ]
+                    if heal_ids:
+                        async with pool.acquire() as conn2:
+                            await conn2.execute(
+                                "UPDATE user_sessions SET status = 'ready' "
+                                "WHERE user_id = $1::uuid AND id = ANY($2::uuid[])",
+                                user_id, heal_ids,
+                            )
+                        logger.info(
+                            "user_sessions self-heal: user=%s healed=%d",
+                            user_id, len(heal_ids),
+                        )
+                        # 반환 rows 에도 반영
+                        heal_set = set(heal_ids)
+                        rows = [
+                            dict(r, status="ready") if r["id"] in heal_set else dict(r)
+                            for r in rows
+                        ]
+                        return [r if isinstance(r, dict) else dict(r) for r in rows]
+            except Exception as exc:
+                logger.warning("user_sessions self-heal skipped: %s", exc)
+
         return [dict(r) for r in rows]
 
     async def create_session(self, user_id: str, body) -> dict:
@@ -163,6 +212,14 @@ class UserStore:
             if not body.pdf_hash:
                 return await self.create_session(user_id, body)
 
+            # 재업로드 시 이미 ready/failed 였던 행이 pending 으로 다운그레이드되는 것을 방지.
+            # status CASE: 기존 status가 ready/failed면 그대로 유지, 아니면 EXCLUDED 적용.
+            status_clause = (
+                "status = CASE "
+                "  WHEN user_sessions.status IN ('ready','failed') THEN user_sessions.status "
+                "  ELSE EXCLUDED.status "
+                "END"
+            )
             if explicit_id:
                 row = await conn.fetchrow(
                     "INSERT INTO user_sessions "
@@ -173,7 +230,7 @@ class UserStore:
                     "  subject_id = EXCLUDED.subject_id, "
                     "  page_count = EXCLUDED.page_count, "
                     "  word_count = EXCLUDED.word_count, "
-                    "  status = EXCLUDED.status, "
+                    f"  {status_clause}, "
                     "  last_accessed = now() "
                     "RETURNING id::text, pdf_name, pdf_hash, subject_id::text, "
                     "page_count, word_count, status, created_at, last_accessed",
@@ -190,7 +247,7 @@ class UserStore:
                     "  subject_id = EXCLUDED.subject_id, "
                     "  page_count = EXCLUDED.page_count, "
                     "  word_count = EXCLUDED.word_count, "
-                    "  status = EXCLUDED.status, "
+                    f"  {status_clause}, "
                     "  last_accessed = now() "
                     "RETURNING id::text, pdf_name, pdf_hash, subject_id::text, "
                     "page_count, word_count, status, created_at, last_accessed",

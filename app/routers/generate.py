@@ -40,14 +40,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _sync_user_session_status(user_id: str | None, session_id: str, status: str) -> None:
-    """user_sessions DB 행의 status도 같이 갱신 (로그인 사용자일 때만)."""
+async def _sync_user_session_status(user_id: str | None, session_id: str, status: str) -> bool:
+    """user_sessions DB 행의 status를 갱신. 로그인 사용자가 아니면 True 반환.
+
+    실패(예외 발생 또는 0 row matched)는 error 로그로 남기고 False 반환.
+    호출측이 반환값을 확인해 memory store를 failed로 전이시키는 것이 원칙.
+    """
     if not user_id:
-        return
+        return True
     try:
-        await get_user_store().update_session_status(user_id, session_id, status)
+        updated = await get_user_store().update_session_status(user_id, session_id, status)
     except Exception as exc:
-        logger.warning("user_sessions status sync 실패 (session=%s, status=%s): %s", session_id, status, exc)
+        logger.error(
+            "user_sessions status sync 실패 (session=%s user=%s status=%s): %s",
+            session_id, user_id, status, exc,
+        )
+        return False
+    if not updated:
+        logger.error(
+            "user_sessions status sync 0 row matched (session=%s user=%s status=%s)",
+            session_id, user_id, status,
+        )
+        return False
+    return True
 
 
 async def _run_generation(session_id: str, api_key: str, options: GenerateOptions | None, plan: str = "paid", lang: str = "ko"):
@@ -64,11 +79,22 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
         await store.update_status(session_id, "failed", error_message=msg)
         await _sync_user_session_status(record.user_id, session_id, "failed")
 
+    async def _finalize_ready(result_json: str) -> None:
+        """메모리 store 완료 처리 + DB sync. sync 실패 시 memory를 failed로 되돌림."""
+        await store.update_status(session_id, "complete", progress_pct=100, result_json=result_json)
+        ok = await _sync_user_session_status(record.user_id, session_id, "ready")
+        if not ok:
+            await store.update_status(
+                session_id,
+                "failed",
+                error_message="DB 상태 동기화 실패 — 세션을 다시 생성해주세요.",
+                result_json=result_json,
+            )
+
     # Check question bank cache first
     cached_json = await get_cached(record.pdf_hash)
     if cached_json:
-        await store.update_status(session_id, "complete", progress_pct=100, result_json=cached_json)
-        await _sync_user_session_status(record.user_id, session_id, "ready")
+        await _finalize_ready(cached_json)
         logger.info("Question bank cache hit for session %s (hash=%s)", session_id, record.pdf_hash[:12])
         return
 
@@ -187,8 +213,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     )
 
     content_json = content.model_dump_json()
-    await store.update_status(session_id, "complete", progress_pct=100, result_json=content_json)
-    await _sync_user_session_status(record.user_id, session_id, "ready")
+    await _finalize_ready(content_json)
     logger.info("Generation complete for session %s: %d MCQ, %d fill", session_id, len(mcq_list), len(fill_list))
 
     # Persist to question bank for future cache hits
@@ -270,6 +295,31 @@ async def get_status(session_id: str, user: Optional[dict] = Depends(get_current
     )
 
 
+async def _load_result_from_db(session_id: str, user_id: str) -> str | None:
+    """memory store miss 시 DB fallback: user_sessions.pdf_hash → question_bank.content_json.
+
+    로그인 사용자 소유 세션만 조회. 두 테이블이 서로 다른 DB 풀이어도 각자 조회한다.
+    """
+    try:
+        pool = getattr(get_user_store(), "_pool", None)
+        if pool is None:
+            return None
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT pdf_hash, status FROM user_sessions "
+                "WHERE id = $1::uuid AND user_id = $2::uuid",
+                session_id, user_id,
+            )
+        if row is None or not row["pdf_hash"]:
+            return None
+        # question_bank는 별개 풀이므로 get_cached 사용
+        cached = await get_cached(row["pdf_hash"])
+        return cached
+    except Exception as exc:
+        logger.warning("DB fallback load failed for session %s: %s", session_id, exc)
+        return None
+
+
 @router.get("/result/{session_id}", response_model=StudyContent)
 async def get_result(session_id: str, user: Optional[dict] = Depends(get_current_user)):
     """Retrieve the completed StudyContent. Returns 202 if still processing."""
@@ -277,22 +327,33 @@ async def get_result(session_id: str, user: Optional[dict] = Depends(get_current
         raise HTTPException(status_code=400, detail="Invalid session ID format.")
     store = get_store()
     record = await store.get(session_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    _check_ownership(record, user)
-    if record.status == "processing":
-        raise HTTPException(status_code=202, detail="Generation still in progress.")
-    if record.status == "failed":
-        raise HTTPException(status_code=500, detail=record.error_message or "Generation failed.")
-    if record.status == "uploaded":
-        raise HTTPException(status_code=400, detail="Generation not started. Call /generate first.")
-    if not record.result_json:
-        raise HTTPException(status_code=500, detail="Result data missing.")
 
+    # Fast path: memory store hit
+    if record is not None:
+        _check_ownership(record, user)
+        if record.status == "processing":
+            raise HTTPException(status_code=202, detail="Generation still in progress.")
+        if record.status == "failed":
+            raise HTTPException(status_code=500, detail=record.error_message or "Generation failed.")
+        if record.status == "uploaded":
+            raise HTTPException(status_code=400, detail="Generation not started. Call /generate first.")
+        if record.result_json:
+            try:
+                return StudyContent.model_validate_json(record.result_json)
+            except Exception as exc:
+                logger.error("Failed to parse result for session %s: %s", session_id, exc)
+                raise HTTPException(status_code=500, detail="Failed to parse result.") from exc
+
+    # Fallback: memory store miss (TTL 만료/서버 재시작 등). DB에서 pdf_hash 조회 후 question_bank에서 로드.
+    if user is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    cached = await _load_result_from_db(session_id, user["user_id"])
+    if cached is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
     try:
-        return StudyContent.model_validate_json(record.result_json)
+        return StudyContent.model_validate_json(cached)
     except Exception as exc:
-        logger.error("Failed to parse result for session %s: %s", session_id, exc)
+        logger.error("Failed to parse DB-cached result for session %s: %s", session_id, exc)
         raise HTTPException(status_code=500, detail="Failed to parse result.") from exc
 
 
