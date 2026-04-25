@@ -4,7 +4,11 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 
 ---
 
-## 현재 상태 (2026-04-15)
+## 현재 상태 (2026-04-25)
+
+> **2026-04-25** — 문제 생성 품질 개선 Phase A 1차 (`feat/question-quality-phase-a` 브랜치):
+> 한글 호환 validation 버그 수정, **OX(참/거짓) 문제 유형 추가**, Few-shot exemplar 주입.
+> 응답에 `ox_questions` 필드 추가. 상세는 `documents/record_progress/2026-04-25-01-문제생성-품질-개선-Phase-A-1차.md`.
 
 ### 완성된 기능
 
@@ -15,7 +19,10 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 - [x] **TimelyGPT 플랜 (timely)** — TimelyGPT (timelygpt.co.kr) API 키로 50+ 모델 선택 (토큰 캐싱 55분 + 서킷 브레이커 + 재시도)
 - [x] **모델 선택** — `GenerateOptions.model` 필드로 클라이언트가 원하는 모델 지정 가능 (없으면 서버 기본값 사용)
 - [x] **PDF 문제은행** — 업로드 시 SHA-256 해시 계산, PostgreSQL에 영구 저장, 동일 PDF 재업로드 시 LLM 호출 없이 즉시 반환
-- [x] 3단계 비동기 콘텐츠 생성 파이프라인 (Notes → MCQ 배치 → Fill 배치)
+- [x] **4단계 비동기 콘텐츠 생성 파이프라인** (Notes → OX → MCQ → Fill, 2026-04-25 OX 단계 추가)
+- [x] **OX(참/거짓) 문제 유형** (2026-04-25, `feat/question-quality-phase-a`) — `OXQuestion(statement, answer "O|X", explanation, level, question_type)`. 답안은 True/False/T/F/참/거짓/bool 모두 정규화. 기본 8~12문항. `GenerateOptions.ox_count = 0` 으로 비활성 가능
+- [x] **Few-shot exemplar 주입** (2026-04-25) — `app/services/exemplars/`에 MCQ/OX/FILL 각 2개 gold-standard 예시. 프롬프트에 "imitate style, do NOT copy content" 블록으로 주입. MCQ 에는 `_TRAP_DISTRACTOR_GUIDE`(시블링 혼동·순서 반전·유사 도메인 차용) 추가
+- [x] **한글 validation 호환** (2026-04-25) — `_tokenize` 정규식을 `[a-zA-Z]{3,}|[가-힣]{2,}` 로 교체. 한글 explanation 의 hallucination/중복 검사가 사실상 무력화돼 있던 버그 수정. 중복 임계 0.70 → 0.60 (한국어 어미 변화 보정)
 - [x] Gemini MCQ/Fill 배치 분할 생성 (MCQ 5개/배치, Fill 8개/배치 — 토큰 한도 대응)
 - [x] **문제 레벨 1~5** — `difficulty: easy/medium/hard` 대신 정수 `level: 1~5` 체계. 레벨 정의: 1(기초암기)·2(개념이해)·3(시험최하)·4(표준시험)·5(고난도). 기존 저장 데이터 자동 변환 (easy→2, medium→3, hard→4)
 - [x] **문제 유형 분류** — `question_type: concept | application` (개념문제 / 실습문제). MCQ·Fill 모두 적용

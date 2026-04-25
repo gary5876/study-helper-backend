@@ -28,9 +28,10 @@ from app.services.prompt_builder import (
     build_fill_prompt,
     build_mcq_prompt,
     build_notes_prompt,
+    build_ox_prompt,
     calculate_question_counts,
 )
-from app.services.response_validator import validate_fill, validate_mcq, validate_notes
+from app.services.response_validator import validate_fill, validate_mcq, validate_notes, validate_ox
 from app.services.session_store import get_store
 from app.services.question_bank import get_cached, save_to_bank
 from app.services.user_store import get_user_store
@@ -116,10 +117,12 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     # Determine question counts
     mcq_count = options.mcq_count if options and options.mcq_count else None
     fill_count = options.fill_count if options and options.fill_count else None
-    if mcq_count is None or fill_count is None:
-        auto_mcq, auto_fill = calculate_question_counts(section_count)
+    ox_count = options.ox_count if options and options.ox_count is not None else None
+    if mcq_count is None or fill_count is None or ox_count is None:
+        auto_mcq, auto_fill, auto_ox = calculate_question_counts(section_count)
         mcq_count = mcq_count or auto_mcq
         fill_count = fill_count or auto_fill
+        ox_count = auto_ox if ox_count is None else ox_count
 
     # Resolve model: use client-specified model if provided, else server default
     model = options.model if options and options.model else None
@@ -142,9 +145,9 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
         await _fail(f"Notes generation failed: {exc.message}")
         return
 
-    await store.update_status(session_id, "processing", progress_pct=40)
+    await store.update_status(session_id, "processing", progress_pct=30)
 
-    # Validate notes to get concept IDs for MCQ/fill prompts
+    # Validate notes to get concept IDs for MCQ/fill/ox prompts
     try:
         notes_obj = validate_notes(notes_raw, full_text)
     except ValidationError as exc:
@@ -153,35 +156,43 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
 
     notes_dict = notes_raw  # keep raw dict for prompt context
 
-    # ── Stage 2: MCQ generation ─────────────────────────────────────────
+    async def _call_llm(sys_p: str, user_p: str, max_tokens: int) -> dict:
+        if plan == "gpt":
+            return await openai_generate(api_key, sys_p, user_p, max_tokens=max_tokens, model=model)
+        if plan == "timely":
+            return await timely_generate(api_key, sys_p, user_p, max_tokens=max_tokens, model=model)
+        return await anthropic_generate(api_key, sys_p, user_p, max_tokens=max_tokens, model=model)
+
+    # ── Stage 2: OX generation (skipped if ox_count == 0) ──────────────
+    ox_raw: dict | None = None
+    if ox_count and ox_count > 0:
+        sys_ox, prompt_ox = build_ox_prompt(full_text, notes_dict, ox_count, lang)
+        try:
+            ox_raw = await _call_llm(sys_ox, prompt_ox, max_tokens=4096)
+        except GenerationError as exc:
+            await _fail(f"OX generation failed: {exc.message}")
+            return
+        await store.update_status(session_id, "processing", progress_pct=50)
+
+    # ── Stage 3: MCQ generation ─────────────────────────────────────────
     sys_mcq, prompt_mcq = build_mcq_prompt(full_text, notes_dict, mcq_count, lang)
     try:
-        if plan == "gpt":
-            mcq_raw = await openai_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192, model=model)
-        elif plan == "timely":
-            mcq_raw = await timely_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192, model=model)
-        else:
-            mcq_raw = await anthropic_generate(api_key, sys_mcq, prompt_mcq, max_tokens=8192, model=model)
+        mcq_raw = await _call_llm(sys_mcq, prompt_mcq, max_tokens=8192)
     except GenerationError as exc:
         await _fail(f"MCQ generation failed: {exc.message}")
         return
 
-    await store.update_status(session_id, "processing", progress_pct=70)
+    await store.update_status(session_id, "processing", progress_pct=75)
 
-    # ── Stage 3: Fill-in-blank generation ──────────────────────────────
+    # ── Stage 4: Fill-in-blank generation ──────────────────────────────
     sys_fill, prompt_fill = build_fill_prompt(full_text, notes_dict, fill_count, lang)
     try:
-        if plan == "gpt":
-            fill_raw = await openai_generate(api_key, sys_fill, prompt_fill, max_tokens=2048, model=model)
-        elif plan == "timely":
-            fill_raw = await timely_generate(api_key, sys_fill, prompt_fill, max_tokens=2048, model=model)
-        else:
-            fill_raw = await anthropic_generate(api_key, sys_fill, prompt_fill, max_tokens=2048, model=model)
+        fill_raw = await _call_llm(sys_fill, prompt_fill, max_tokens=2048)
     except GenerationError as exc:
         await _fail(f"Fill generation failed: {exc.message}")
         return
 
-    await store.update_status(session_id, "processing", progress_pct=85)
+    await store.update_status(session_id, "processing", progress_pct=88)
 
     # Validate
     valid_concept_ids = {c.id for c in notes_obj.key_concepts}
@@ -189,6 +200,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
     try:
         mcq_list = validate_mcq(mcq_raw, valid_concept_ids, full_text)
         fill_list = validate_fill(fill_raw, valid_concept_ids, full_text)
+        ox_list = validate_ox(ox_raw, valid_concept_ids, full_text) if ox_raw else []
     except ValidationError as exc:
         await _fail(f"Validation failed: {exc.message}")
         return
@@ -199,6 +211,7 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
         notes=notes_obj,
         mcq_questions=mcq_list,
         fill_questions=fill_list,
+        ox_questions=ox_list,
         metadata=ContentMetadata(
             page_count=record.page_count,
             word_count=record.word_count,
@@ -214,7 +227,10 @@ async def _run_generation(session_id: str, api_key: str, options: GenerateOption
 
     content_json = content.model_dump_json()
     await _finalize_ready(content_json)
-    logger.info("Generation complete for session %s: %d MCQ, %d fill", session_id, len(mcq_list), len(fill_list))
+    logger.info(
+        "Generation complete for session %s: %d MCQ, %d fill, %d OX",
+        session_id, len(mcq_list), len(fill_list), len(ox_list),
+    )
 
     # Persist to question bank for future cache hits
     await save_to_bank(

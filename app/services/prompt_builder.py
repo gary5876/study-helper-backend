@@ -3,6 +3,18 @@ from __future__ import annotations
 
 import json
 
+from app.services.exemplars import (
+    fill_exemplars_block,
+    mcq_exemplars_block,
+    ox_exemplars_block,
+)
+
+
+_EXEMPLAR_PREAMBLE = (
+    "GOLD STANDARD EXAMPLES (imitate the *style and difficulty*, do NOT copy the "
+    "content — your output must address the actual document below):"
+)
+
 
 _LANG_INSTRUCTION = {
     "ko": "모든 출력(term, definition, question, explanation, hint 등)은 반드시 한국어로 작성하세요. JSON 키 이름은 영어 그대로 유지하세요.",
@@ -26,6 +38,14 @@ FILL_SYSTEM = (
     "You are an expert at creating fill-in-the-blank study exercises. "
     "Your output must be valid JSON only — no markdown fences, no extra text. "
     "Blanks must target key terms from the document, not filler words."
+)
+
+OX_SYSTEM = (
+    "You are an expert at writing rigorous true/false (O/X) exam statements. "
+    "Your output must be valid JSON only — no markdown fences, no extra text. "
+    "Each statement must be unambiguously true or false based on the document, "
+    "not a matter of opinion or interpretation. False statements must contain a "
+    "subtle, specific factual error — never vague generalities."
 )
 
 _MCQ_LEVEL_GUIDE = """\
@@ -57,6 +77,31 @@ DISTRIBUTION: ~10% level-1, ~15% level-2, ~25% level-3, ~35% level-4, ~15% level
 QUESTION TYPE:
   "concept"     — the blank is a theoretical term or principle.
   "application" — the blank is a result, method, or outcome in a practical context.\
+"""
+
+_OX_LEVEL_GUIDE = """\
+LEVEL DEFINITIONS (assign level 1–5 to each statement):
+  Level 1 — Direct factual claim restated from the document.
+  Level 2 — Paraphrased fact; testing comprehension.
+  Level 3 — Two related concepts joined; tests whether the student notices a swap.
+  Level 4 — Subtle distortion: numbers, scope, conditions, or causality slightly off.
+  Level 5 — Trap statement designed around a known misconception or sibling-concept confusion.
+
+DISTRIBUTION: ~10% level-1, ~15% level-2, ~25% level-3, ~30% level-4, ~20% level-5
+
+ANSWER BALANCE: aim for roughly 50/50 O vs X across the set; never all the same.
+\
+"""
+
+_TRAP_DISTRACTOR_GUIDE = """\
+DISTRACTOR DESIGN (mandatory for MCQ):
+  - Each distractor must be a plausible misconception, not random wrong text.
+  - At least 2 distractors per question should reflect:
+      (a) sibling-concept confusion (e.g., val vs var, supervised vs unsupervised)
+      (b) off-by-one or order reversal in a multi-step process
+      (c) syntax or terminology borrowed from a related domain
+  - Avoid "none of the above" / "all of the above".
+  - The correct option should not be systematically longer or shorter than the others.\
 """
 
 
@@ -113,6 +158,11 @@ AVAILABLE CONCEPT IDs (use these for concept_id field):
 
 {_MCQ_LEVEL_GUIDE}
 
+{_TRAP_DISTRACTOR_GUIDE}
+
+{_EXEMPLAR_PREAMBLE}
+{mcq_exemplars_block()}
+
 OUTPUT FORMAT (JSON only):
 {{
   "questions": [
@@ -165,6 +215,9 @@ AVAILABLE CONCEPT IDs:
 
 {_FILL_LEVEL_GUIDE}
 
+{_EXEMPLAR_PREAMBLE}
+{fill_exemplars_block()}
+
 OUTPUT FORMAT (JSON only):
 {{
   "questions": [
@@ -197,8 +250,66 @@ DOCUMENT:
     return FILL_SYSTEM, user_prompt
 
 
-def calculate_question_counts(section_count: int) -> tuple[int, int]:
-    """Return (mcq_count, fill_count) based on document size."""
+def build_ox_prompt(
+    document_text: str,
+    notes_json: dict,
+    ox_count: int,
+    lang: str = "ko",
+) -> tuple[str, str]:
+    """Return (system_prompt, user_prompt) for true/false (O/X) generation."""
+    concept_list = json.dumps(
+        [{"id": c["id"], "term": c["term"]} for c in notes_json.get("key_concepts", [])],
+        ensure_ascii=False,
+    )
+    lang_note = _LANG_INSTRUCTION.get(lang, _LANG_INSTRUCTION["ko"])
+    user_prompt = f"""{lang_note}
+
+Generate exactly {ox_count} true/false (O/X) statements based on the document and study notes.
+
+AVAILABLE CONCEPT IDs (use these for concept_id field):
+{concept_list}
+
+{_OX_LEVEL_GUIDE}
+
+{_EXEMPLAR_PREAMBLE}
+{ox_exemplars_block()}
+
+OUTPUT FORMAT (JSON only):
+{{
+  "questions": [
+    {{
+      "id": "<uuid>",
+      "statement": "<a declarative sentence; do NOT phrase as a question>",
+      "answer": "O|X",
+      "explanation": "<why the statement is true (O) or specifically what is wrong (X)>",
+      "concept_id": "<one of the concept IDs above>",
+      "level": 1|2|3|4|5,
+      "question_type": "concept|application"
+    }}
+  ]
+}}
+
+RULES:
+- Statement must be declarative, not interrogative — no question marks at the end.
+- For X (false) statements: the error must be specific and located in a single clause
+  (e.g., a swapped term, a wrong number, a reversed cause/effect). Do NOT use vague
+  negations like "X is not important".
+- For O (true) statements: avoid trivial restatements; require at least light inference.
+- Roughly half O and half X. Do not output a streak of the same answer.
+- Every statement MUST have a concept_id from the list above.
+
+STUDY NOTES (for context):
+{json.dumps(notes_json, ensure_ascii=False, indent=2)}
+
+DOCUMENT:
+{document_text}
+"""
+    return OX_SYSTEM, user_prompt
+
+
+def calculate_question_counts(section_count: int) -> tuple[int, int, int]:
+    """Return (mcq_count, fill_count, ox_count) based on document size."""
     mcq = max(10, min(20, section_count * 3))
     fill = max(6, min(15, section_count * 2))
-    return mcq, fill
+    ox = max(8, min(12, section_count * 2))
+    return mcq, fill, ox

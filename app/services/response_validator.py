@@ -13,6 +13,7 @@ from app.models.schemas import (
     KeyConcept,
     MCQOptions,
     MCQQuestion,
+    OXQuestion,
     StudyNotes,
     StudySection,
     _DIFFICULTY_TO_LEVEL,
@@ -26,9 +27,21 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ─────────────────────────────────────────
 
+_TOKEN_RE = re.compile(r"[a-zA-Z]{3,}|[가-힣]{2,}")
+
+# Korean inflectional endings make token sets diverge more than English even
+# when two questions ask the same thing ("무엇입니까" vs "무엇인가요"). Empirically
+# 0.70 is too strict — a near-duplicate Korean pair lands around 0.65–0.70.
+_DUP_JACCARD_THRESHOLD = 0.60
+
+
 def _tokenize(text: str) -> set[str]:
-    """Simple word tokenizer for keyword overlap checks."""
-    return set(re.findall(r"\b[a-zA-Z]{4,}\b", text.lower()))
+    """Word tokenizer supporting both Korean (2+ chars) and English (3+ chars).
+
+    Earlier this function used `\\b[a-zA-Z]{4,}\\b`, which silently dropped every
+    Korean token — making hallucination/duplicate checks no-ops on Korean output.
+    """
+    return set(_TOKEN_RE.findall(text.lower()))
 
 
 def _keyword_overlap(text_a: str, text_b: str) -> float:
@@ -215,7 +228,7 @@ def validate_mcq(raw: dict, valid_concept_ids: set[str], source_text: str) -> li
         for prev in seen_questions:
             prev_tokens = _tokenize(prev)
             union = q_tokens | prev_tokens
-            if union and len(q_tokens & prev_tokens) / len(union) > 0.70:
+            if union and len(q_tokens & prev_tokens) / len(union) > _DUP_JACCARD_THRESHOLD:
                 is_dup = True
                 break
         if is_dup:
@@ -311,5 +324,101 @@ def validate_fill(raw: dict, valid_concept_ids: set[str], source_text: str) -> l
 
     if not validated:
         raise ValidationError("No valid fill-in-blank questions could be extracted.")
+
+    return validated
+
+
+# ─────────────────────────────────────────
+# OX (True/False) Validation
+# ─────────────────────────────────────────
+
+def _normalize_ox_answer(raw: object) -> str | None:
+    """Map various truthy/falsy representations to 'O' or 'X'. Returns None if invalid."""
+    if isinstance(raw, bool):
+        return "O" if raw else "X"
+    if not isinstance(raw, str):
+        return None
+    up = raw.strip().upper()
+    if up in ("O", "TRUE", "T", "참"):
+        return "O"
+    if up in ("X", "FALSE", "F", "거짓"):
+        return "X"
+    return None
+
+
+def validate_ox(raw: dict, valid_concept_ids: set[str], source_text: str) -> list[OXQuestion]:
+    """Validate true/false (O/X) statements. Skips malformed items rather than failing."""
+    questions_raw = raw.get("questions", [])
+    if not isinstance(questions_raw, list):
+        raise ValidationError("OX response missing 'questions' array.")
+
+    seen_statements: list[str] = []
+    validated: list[OXQuestion] = []
+
+    for q in questions_raw:
+        if not isinstance(q, dict):
+            continue
+        _ensure_id(q)
+
+        statement = str(q.get("statement", q.get("question", ""))).strip()
+        if not statement:
+            continue
+        # OX statements must be declarative; strip a trailing question mark if the
+        # model slipped one in, but log it.
+        if statement.endswith("?"):
+            logger.warning("OX %s: statement ends with '?', stripping.", q["id"])
+            statement = statement.rstrip("?").rstrip()
+
+        answer = _normalize_ox_answer(q.get("answer"))
+        if answer is None:
+            logger.warning("OX %s: invalid answer %r, skipping.", q["id"], q.get("answer"))
+            continue
+
+        explanation = str(q.get("explanation", "")).strip()
+        if len(explanation) < 15:
+            explanation = "Statement is correct." if answer == "O" else "Statement contains an error."
+
+        # Hallucination check (logged, not enforced)
+        overlap = _keyword_overlap(explanation, source_text)
+        if len(explanation.split()) > 25 and overlap < 0.15:
+            logger.warning(
+                "OX %s: explanation keyword overlap=%.2f (possible hallucination).", q["id"], overlap
+            )
+
+        concept_id = str(q.get("concept_id", ""))
+        if concept_id not in valid_concept_ids:
+            concept_id = next(iter(valid_concept_ids), "")
+
+        # Near-duplicate detection
+        s_tokens = _tokenize(statement)
+        is_dup = False
+        for prev in seen_statements:
+            prev_tokens = _tokenize(prev)
+            union = s_tokens | prev_tokens
+            if union and len(s_tokens & prev_tokens) / len(union) > _DUP_JACCARD_THRESHOLD:
+                is_dup = True
+                break
+        if is_dup:
+            logger.warning("OX %s: near-duplicate, skipping.", q["id"])
+            continue
+        seen_statements.append(statement)
+
+        level = _coerce_level(q.get("level", q.get("difficulty", 3)))
+        question_type = _coerce_question_type(q.get("question_type"))
+
+        validated.append(
+            OXQuestion(
+                id=q["id"],
+                statement=statement,
+                answer=answer,  # type: ignore[arg-type]
+                explanation=explanation,
+                concept_id=concept_id,
+                level=level,
+                question_type=question_type,  # type: ignore[arg-type]
+            )
+        )
+
+    if not validated:
+        raise ValidationError("No valid OX statements could be extracted.")
 
     return validated

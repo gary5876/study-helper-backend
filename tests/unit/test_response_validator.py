@@ -2,7 +2,13 @@
 import pytest
 
 from app.core.exceptions import ValidationError
-from app.services.response_validator import validate_notes, validate_mcq, validate_fill
+from app.services.response_validator import (
+    _tokenize,
+    validate_notes,
+    validate_mcq,
+    validate_fill,
+    validate_ox,
+)
 
 
 SOURCE_TEXT = (
@@ -298,3 +304,165 @@ def test_validate_fill_question_type_application():
     raw = {"questions": [{**VALID_FILL_RAW["questions"][0], "question_type": "application"}]}
     qs = validate_fill(raw, {"c1"}, SOURCE_TEXT)
     assert qs[0].question_type == "application"
+
+
+# ─────────────────────────────────────────
+# Tokenizer — Korean + English support
+# ─────────────────────────────────────────
+
+def test_tokenize_extracts_korean():
+    tokens = _tokenize("코틀린은 자바와 100% 호환된다")
+    assert "코틀린은" in tokens
+    assert "자바와" in tokens
+    assert "호환된다" in tokens
+
+
+def test_tokenize_skips_single_korean_char():
+    tokens = _tokenize("가 나 다 코틀린")
+    # Single Korean characters are noise; only 2+ char tokens kept
+    assert "가" not in tokens
+    assert "코틀린" in tokens
+
+
+def test_tokenize_extracts_mixed_korean_english():
+    tokens = _tokenize("Kotlin은 JVM 기반 언어이다")
+    assert "kotlin" in tokens  # lowercased
+    assert "jvm" in tokens
+    assert "기반" in tokens
+    assert "언어이다" in tokens
+
+
+def test_tokenize_legacy_english_still_works():
+    tokens = _tokenize("Machine Learning is a subset of AI.")
+    assert "machine" in tokens
+    assert "learning" in tokens
+    assert "subset" in tokens
+    # 2-letter English words still excluded (threshold = 3+)
+    assert "ai" not in tokens
+    assert "is" not in tokens
+
+
+# ─────────────────────────────────────────
+# OX validation
+# ─────────────────────────────────────────
+
+VALID_OX_RAW = {
+    "questions": [
+        {
+            "id": "ox1",
+            "statement": "Neural networks are computational models inspired by the brain.",
+            "answer": "O",
+            "explanation": "The document explicitly states this — neural networks model the brain's computation.",
+            "concept_id": "c1",
+            "level": 2,
+            "question_type": "concept",
+        },
+        {
+            "id": "ox2",
+            "statement": "Gradient descent always finds the global minimum of any loss surface.",
+            "answer": "X",
+            "explanation": "Gradient descent only guarantees convergence to a local minimum, not global.",
+            "concept_id": "c2",
+            "level": 4,
+            "question_type": "concept",
+        },
+    ]
+}
+
+
+def test_validate_ox_happy_path():
+    qs = validate_ox(VALID_OX_RAW, {"c1", "c2"}, SOURCE_TEXT)
+    assert len(qs) == 2
+    assert qs[0].answer == "O"
+    assert qs[1].answer == "X"
+    assert qs[1].level == 4
+
+
+def test_validate_ox_normalizes_true_false_strings():
+    raw = {
+        "questions": [
+            {**VALID_OX_RAW["questions"][0], "answer": "True"},
+            {**VALID_OX_RAW["questions"][1], "answer": "false"},
+        ]
+    }
+    qs = validate_ox(raw, {"c1", "c2"}, SOURCE_TEXT)
+    assert qs[0].answer == "O"
+    assert qs[1].answer == "X"
+
+
+def test_validate_ox_normalizes_korean_truthy_words():
+    raw = {
+        "questions": [
+            {**VALID_OX_RAW["questions"][0], "answer": "참"},
+            {**VALID_OX_RAW["questions"][1], "answer": "거짓"},
+        ]
+    }
+    qs = validate_ox(raw, {"c1", "c2"}, SOURCE_TEXT)
+    assert qs[0].answer == "O"
+    assert qs[1].answer == "X"
+
+
+def test_validate_ox_strips_trailing_question_mark():
+    raw = {
+        "questions": [
+            {**VALID_OX_RAW["questions"][0], "statement": "Neural networks are inspired by the brain?"},
+        ]
+    }
+    qs = validate_ox(raw, {"c1"}, SOURCE_TEXT)
+    assert not qs[0].statement.endswith("?")
+
+
+def test_validate_ox_skips_invalid_answer():
+    raw = {
+        "questions": [
+            {**VALID_OX_RAW["questions"][0]},  # valid
+            {**VALID_OX_RAW["questions"][1], "answer": "maybe"},  # invalid
+        ]
+    }
+    qs = validate_ox(raw, {"c1", "c2"}, SOURCE_TEXT)
+    assert len(qs) == 1
+    assert qs[0].id == "ox1"
+
+
+def test_validate_ox_no_valid_raises():
+    with pytest.raises(ValidationError):
+        validate_ox({"questions": []}, {"c1"}, SOURCE_TEXT)
+
+
+def test_validate_ox_concept_id_fallback():
+    raw = {"questions": [{**VALID_OX_RAW["questions"][0], "concept_id": "nonexistent"}]}
+    qs = validate_ox(raw, {"c1", "c2"}, SOURCE_TEXT)
+    assert qs[0].concept_id in {"c1", "c2"}
+
+
+def test_validate_mcq_korean_duplicate_detection():
+    """Two near-identical Korean questions should trigger duplicate filter
+    (broken pre-fix because the tokenizer dropped all Korean tokens)."""
+    raw = {
+        "questions": [
+            {
+                "id": "q1",
+                "question": "코틀린에서 val과 var의 차이점은 무엇입니까?",
+                "options": {"A": "재할당 가능", "B": "재할당 불가", "C": "타입 추론", "D": "널 안전성"},
+                "correct_answer": "B",
+                "explanation": "val은 재할당이 불가능하고 var는 재할당이 가능하다.",
+                "concept_id": "c1",
+                "level": 3,
+                "question_type": "concept",
+            },
+            {
+                "id": "q2",
+                "question": "코틀린에서 val과 var의 차이점은 무엇인가요?",  # near-duplicate
+                "options": {"A": "다른 옵션", "B": "재할당 불가", "C": "타입", "D": "널"},
+                "correct_answer": "B",
+                "explanation": "val은 재할당이 불가능하다.",
+                "concept_id": "c1",
+                "level": 3,
+                "question_type": "concept",
+            },
+        ]
+    }
+    qs = validate_mcq(raw, {"c1"}, "코틀린에서 val과 var는 재할당 가능 여부가 다르다.")
+    # Duplicate filter should keep only the first
+    assert len(qs) == 1
+    assert qs[0].id == "q1"

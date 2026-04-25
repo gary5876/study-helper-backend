@@ -82,6 +82,46 @@ class MCQQuestion(BaseModel):
 
 
 # ─────────────────────────────────────────
+# OX (True/False) Questions
+# ─────────────────────────────────────────
+
+class OXQuestion(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    statement: str
+    answer: Literal["O", "X"]
+    explanation: str
+    concept_id: str
+    level: int = 3
+    question_type: Literal["concept", "application"] = "concept"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_fields(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        if "level" not in data and "difficulty" in data:
+            data["level"] = _DIFFICULTY_TO_LEVEL.get(str(data["difficulty"]), 3)
+        if "level" in data:
+            try:
+                data["level"] = max(1, min(5, int(data["level"])))
+            except (ValueError, TypeError):
+                data["level"] = 3
+        if data.get("question_type") not in _VALID_QUESTION_TYPES:
+            data["question_type"] = "concept"
+        # Normalize answer: accept "O"/"X" (canonical), "True"/"False", "T"/"F", booleans
+        ans = data.get("answer")
+        if isinstance(ans, bool):
+            data["answer"] = "O" if ans else "X"
+        elif isinstance(ans, str):
+            up = ans.strip().upper()
+            if up in ("O", "TRUE", "T", "참"):
+                data["answer"] = "O"
+            elif up in ("X", "FALSE", "F", "거짓"):
+                data["answer"] = "X"
+        return data
+
+
+# ─────────────────────────────────────────
 # Fill-in-the-blank Questions
 # ─────────────────────────────────────────
 
@@ -129,6 +169,7 @@ class StudyContent(BaseModel):
     notes: StudyNotes
     mcq_questions: list[MCQQuestion]
     fill_questions: list[FillQuestion]
+    ox_questions: list[OXQuestion] = Field(default_factory=list)
     metadata: ContentMetadata
 
 
@@ -155,6 +196,7 @@ class GenerateRequest(BaseModel):
 class GenerateOptions(BaseModel):
     mcq_count: Optional[int] = Field(default=None, ge=1, le=50)
     fill_count: Optional[int] = Field(default=None, ge=1, le=50)
+    ox_count: Optional[int] = Field(default=None, ge=0, le=30)
     model: Optional[str] = Field(default=None, max_length=100, pattern=r'^[a-zA-Z0-9.\-_]+$')
 
 
