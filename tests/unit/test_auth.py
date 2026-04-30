@@ -66,10 +66,12 @@ async def test_invalid_signature_raises_401():
 
 
 async def test_missing_jwt_secret_raises_500():
+    # 헤더 디코딩 단계를 통과해야 secret 누락 분기에 도달하므로 정상 형식의 HS256 토큰 사용
+    token = _make_token("any-secret")
     with patch("app.core.auth.settings") as mock_settings:
         mock_settings.SUPABASE_JWT_SECRET = None
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(authorization="Bearer sometoken")
+            await get_current_user(authorization=f"Bearer {token}")
     assert exc_info.value.status_code == 500
 
 
