@@ -49,7 +49,10 @@ def _upload(client) -> str:
 # ─────────────────────────────────────────
 
 def test_generate_missing_session_returns_404(client):
-    res = client.post("/generate", json={"session_id": "no-such-id", "api_key": "sk-ant-valid-key-12345"})
+    res = client.post(
+        "/generate",
+        json={"session_id": "00000000-0000-0000-0000-000000000000", "api_key": "sk-ant-valid-key-12345"},
+    )
     assert res.status_code == 404
 
 
@@ -99,7 +102,7 @@ def test_generate_already_processing_returns_processing(client):
 # ─────────────────────────────────────────
 
 def test_status_not_found_returns_404(client):
-    res = client.get("/status/nonexistent")
+    res = client.get("/status/00000000-0000-0000-0000-000000000000")
     assert res.status_code == 404
 
 
@@ -131,7 +134,7 @@ def test_status_reflects_progress(client):
 # ─────────────────────────────────────────
 
 def test_result_not_found_returns_404(client):
-    res = client.get("/result/nonexistent")
+    res = client.get("/result/00000000-0000-0000-0000-000000000000")
     assert res.status_code == 404
 
 
@@ -212,6 +215,6 @@ def test_delete_existing_session(client):
 
 
 def test_delete_nonexistent_returns_200_with_false(client):
-    res = client.delete("/session/no-such-session")
+    res = client.delete("/session/00000000-0000-0000-0000-000000000000")
     assert res.status_code == 200
     assert res.json()["deleted"] is False

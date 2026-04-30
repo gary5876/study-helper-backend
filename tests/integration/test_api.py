@@ -108,7 +108,8 @@ def test_upload_success(mock_parse, client):
 # ─────────────────────────────────────────
 
 def test_status_not_found(client):
-    res = client.get("/status/nonexistent-session-id")
+    # UUID 형식은 통과시켜 핸들러까지 도달하도록 (validators.is_valid_uuid 통과)
+    res = client.get("/status/00000000-0000-0000-0000-000000000000")
     assert res.status_code == 404
 
 
