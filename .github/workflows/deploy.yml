@@ -5,74 +5,58 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
 
-# ── AWS 이전 시 아래 주석 해제 ──────────────────────────────
-# env:
-#   AWS_REGION: ap-northeast-2
-#   ECR_REPOSITORY: fundamentals-backend
-#   ECS_CLUSTER: fundamentals-prod
-#   ECS_SERVICE: fundamentals-backend
-#   CONTAINER_NAME: fundamentals-backend
-# ────────────────────────────────────────────────────────────
+permissions:
+  id-token: write   # OIDC
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  AWS_ROLE_ARN: arn:aws:iam::250847881242:role/github-actions-deploy
+  ECR_REGISTRY: 250847881242.dkr.ecr.ap-northeast-2.amazonaws.com
+  ECR_REPOSITORY: study-helper-backend
+  EC2_INSTANCE_ID: i-0df76ef3c1ad3fb75
 
 jobs:
-  # ──────────────────────────────────────
-  # 1. Test
-  # ──────────────────────────────────────
+  # ──────────────────────────────────────────────
   test:
     name: Test
     runs-on: ubuntu-latest
     services:
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: ["6379:6379"]
         options: >-
           --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
+          --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
+      - run: pip install -r requirements.txt
       - name: Run tests with coverage
         env:
           ENVIRONMENT: test
           REDIS_URL: redis://localhost:6379
         run: pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing
-
-      - name: Upload coverage report
-        uses: codecov/codecov-action@v4
+      - uses: codecov/codecov-action@v4
         with:
           files: coverage.xml
           fail_ci_if_error: false
 
-  # ──────────────────────────────────────
-  # 1b. Security & quality checks
-  # ──────────────────────────────────────
+  # ──────────────────────────────────────────────
   security:
     name: Security Scan
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Run Trivy filesystem vulnerability scan
+      - name: Trivy filesystem scan
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
@@ -80,122 +64,173 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: 1
           ignore-unfixed: true
-
-      - name: Lint with flake8 (errors only)
+      - name: flake8 (errors only)
         run: |
           pip install flake8
           flake8 app/ --count --select=E9,F63,F7,F82 --show-source --statistics
+      - name: ruff
+        run: |
+          pip install ruff
+          ruff check app/ --output-format=github
 
-  # ──────────────────────────────────────
-  # 2. Build & Push Docker image to ECR
-  # ── AWS 이전 시 if: false 제거 ─────────
-  build-and-push:
-    name: Build & Push
-    needs: [test, security]
-    if: false  # Railway 사용 중 — AWS 이전 시 제거하고 아래 조건으로 교체
-    # if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  # ──────────────────────────────────────────────
+  docker-build:
+    name: Docker Build (verify)
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: study-helper-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
+  # ──────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push to ECR
+    needs: [test, security]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
     outputs:
-      image: ${{ steps.build-image.outputs.image }}
-
+      sha: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push image to ECR
-        id: build-image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      - uses: docker/setup-buildx-action@v3
 
-  # ──────────────────────────────────────
-  # 3. Deploy to ECS (rolling update)
-  # ── AWS 이전 시 if: false 제거 ─────────
-  deploy:
-    name: Deploy
+      - name: Build and push (SHA tag)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ──────────────────────────────────────────────
+  # Sync GH Secrets → SSM Parameter Store (SecureString).
+  # deploy.sh on EC2 fetches these at runtime.
+  sync-secrets:
+    name: Sync secrets to Parameter Store
     needs: build-and-push
-    if: false  # Railway 사용 중 — AWS 이전 시 제거
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Download current task definition
+      - name: Put SecureString parameters
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
         run: |
-          aws ecs describe-task-definition \
-            --task-definition ${{ env.ECS_SERVICE }} \
-            --query taskDefinition \
-            > task-definition.json
+          set -e
+          put() {
+            local name="$1"
+            local value="$2"
+            if [ -z "$value" ]; then
+              echo "::warning::secret '$name' is empty — skipping (existing param retained)"
+              return
+            fi
+            aws ssm put-parameter \
+              --region "$AWS_REGION" \
+              --name "$name" \
+              --value "$value" \
+              --type SecureString \
+              --overwrite \
+              --no-cli-pager > /dev/null
+            echo "  put: $name"
+          }
+          put "/study-helper/backend/SUPABASE_URL"              "$SUPABASE_URL"
+          put "/study-helper/backend/SUPABASE_SERVICE_ROLE_KEY" "$SUPABASE_SERVICE_ROLE_KEY"
+          put "/study-helper/backend/SUPABASE_JWT_SECRET"       "$SUPABASE_JWT_SECRET"
+          put "/study-helper/backend/SUPABASE_DB_URL"           "$SUPABASE_DB_URL"
+          put "/study-helper/backend/GEMINI_API_KEYS"           "$GEMINI_API_KEYS"
 
-      - name: Update image in task definition
-        id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition.json
-          container-name: ${{ env.CONTAINER_NAME }}
-          image: ${{ needs.build-and-push.outputs.image }}
-
-      - name: Deploy to ECS (rolling update, zero downtime)
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: ${{ env.ECS_SERVICE }}
-          cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
-
-  # ──────────────────────────────────────
-  # 4. Rollback (manual trigger)
-  # ── AWS 이전 시 if 조건 복원 ───────────
-  rollback:
-    name: Rollback
-    if: false  # Railway 사용 중 — AWS 이전 시 'github.event_name == 'workflow_dispatch'' 로 교체
+  # ──────────────────────────────────────────────
+  deploy:
+    name: Deploy to EC2 (SSM)
+    needs: [build-and-push, sync-secrets]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    environment: production
-
     steps:
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Rollback to previous task definition revision
+      - name: Trigger deploy via SSM
+        env:
+          SHA: ${{ github.sha }}
         run: |
-          CURRENT=$(aws ecs describe-services \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE }} \
-            --query 'services[0].taskDefinition' --output text)
-          FAMILY=$(echo $CURRENT | cut -d: -f1 | awk -F/ '{print $2}')
-          REVISION=$(echo $CURRENT | cut -d: -f2)
-          PREV=$((REVISION - 1))
-          echo "Rolling back from $CURRENT to $FAMILY:$PREV"
-          aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE }} \
-            --task-definition "$FAMILY:$PREV" \
-            --force-new-deployment
+          set -e
+          COMMAND_ID=$(aws ssm send-command \
+            --region "${AWS_REGION}" \
+            --instance-ids "${EC2_INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy backend ${SHA:0:7}" \
+            --parameters "commands=[\"sudo bash /opt/study-helper-backend/deploy/deploy.sh ${SHA}\"]" \
+            --query 'Command.CommandId' --output text)
+          echo "Command ID: $COMMAND_ID"
+          echo "command_id=$COMMAND_ID" >> $GITHUB_ENV
+
+      - name: Wait for SSM command completion
+        run: |
+          set -e
+          for i in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --region "${AWS_REGION}" \
+              --command-id "${command_id}" \
+              --instance-id "${EC2_INSTANCE_ID}" \
+              --query 'Status' --output text 2>/dev/null || echo "Pending")
+            echo "[$i] Status: $STATUS"
+            case "$STATUS" in
+              Success)
+                echo "── stdout ──"
+                aws ssm get-command-invocation \
+                  --region "${AWS_REGION}" \
+                  --command-id "${command_id}" \
+                  --instance-id "${EC2_INSTANCE_ID}" \
+                  --query 'StandardOutputContent' --output text
+                exit 0 ;;
+              Failed|Cancelled|TimedOut)
+                echo "::error::Deploy failed: $STATUS"
+                echo "── stdout ──"
+                aws ssm get-command-invocation \
+                  --region "${AWS_REGION}" \
+                  --command-id "${command_id}" \
+                  --instance-id "${EC2_INSTANCE_ID}" \
+                  --query 'StandardOutputContent' --output text
+                echo "── stderr ──"
+                aws ssm get-command-invocation \
+                  --region "${AWS_REGION}" \
+                  --command-id "${command_id}" \
+                  --instance-id "${EC2_INSTANCE_ID}" \
+                  --query 'StandardErrorContent' --output text
+                exit 1 ;;
+            esac
+            sleep 5
+          done
+          echo "::error::Deploy timed out after 5 minutes"
+          exit 1

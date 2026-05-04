@@ -4,7 +4,14 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 
 ---
 
-## 현재 상태 (2026-04-15)
+## 현재 상태 (2026-05-04)
+
+> **2026-05-04** — main 브랜치 AWS 배포 인프라 도입. EC2 (`study-helper-backend`,
+> EIP `54.116.95.144`) + ECR + SSM Parameter Store + GitHub Actions OIDC.
+> 시크릿은 GH Secrets → SSM Parameter Store (`/study-helper/backend/*`,
+> SecureString) → `deploy.sh` 가 부팅 시 fetch 해서 `.env.prod` 생성. 워크플로우
+> 는 `test → security → docker-build (PR) → build-and-push → sync-secrets →
+> deploy` 6 jobs 구조. 상세: `deploy/`.
 
 ### 완성된 기능
 
@@ -28,7 +35,7 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 - [x] Rate Limiting (IP당 분당 30회)
 - [x] 구조화 JSON 로깅 + Prometheus 메트릭
 - [x] Docker / Docker Compose (PostgreSQL 서비스 포함)
-- [x] GitHub Actions CI/CD → AWS ECS 자동 배포
+- [x] GitHub Actions CI/CD → AWS EC2 (ECR + SSM Parameter Store) 자동 배포 ([deploy/](deploy/) 폴더)
 - [x] 단위 테스트 77개 (response_validator 26개 포함) + 통합 테스트 14개
 - [x] **Supabase RS256 토큰 JWKS 검증** (2026-04-14, `c0d73ac`) — `app/core/auth.py`에서 토큰 헤더 `alg`를 먼저 읽어 비대칭(RS/ES/PS)이면 `iss` 기반 JWKS 엔드포인트에서 공개키를 받아 `kid` 매칭 후 검증, HS256이면 기존 `SUPABASE_JWT_SECRET` 경로 유지. JWKS 1시간 캐시 + `kid` 미스 시 1회 재조회로 키 로테이션 대응. JWKS fetch 실패는 503으로 반환
 - [x] **세션 소유권 검증** (2026-04-14, `2dcb6ed`) — `/generate`·`/status`·`/result`·`/session` 전 엔드포인트에 `user_id` 기반 접근 제어
