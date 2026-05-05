@@ -1,11 +1,14 @@
-name: Backend CI/CD
+name: Backend Deploy
 
+# Triggers only on main push (CI checks live in ci.yml)
 on:
   push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main, develop]
+    branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: backend-deploy-main
+  cancel-in-progress: true
 
 permissions:
   id-token: write   # OIDC
@@ -19,82 +22,8 @@ env:
   EC2_INSTANCE_ID: i-0df76ef3c1ad3fb75
 
 jobs:
-  # ──────────────────────────────────────────────
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    services:
-      redis:
-        image: redis:7-alpine
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s --health-timeout 5s --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-      - run: pip install -r requirements.txt
-      - name: Run tests with coverage
-        env:
-          ENVIRONMENT: test
-          REDIS_URL: redis://localhost:6379
-        run: pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing
-      - uses: codecov/codecov-action@v4
-        with:
-          files: coverage.xml
-          fail_ci_if_error: false
-
-  # ──────────────────────────────────────────────
-  security:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: fs
-          scan-ref: .
-          severity: CRITICAL,HIGH
-          exit-code: 1
-          ignore-unfixed: true
-      - name: flake8 (errors only)
-        run: |
-          pip install flake8
-          flake8 app/ --count --select=E9,F63,F7,F82 --show-source --statistics
-      - name: ruff
-        run: |
-          pip install ruff
-          ruff check app/ --output-format=github
-
-  # ──────────────────────────────────────────────
-  docker-build:
-    name: Docker Build (verify)
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          load: true
-          tags: study-helper-backend:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ──────────────────────────────────────────────
   build-and-push:
     name: Build & Push to ECR
-    needs: [test, security]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ github.sha }}
@@ -127,7 +56,6 @@ jobs:
   sync-secrets:
     name: Sync secrets to Parameter Store
     needs: build-and-push
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Configure AWS credentials (OIDC)
@@ -169,7 +97,6 @@ jobs:
   deploy:
     name: Deploy to EC2 (SSM)
     needs: [build-and-push, sync-secrets]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Configure AWS credentials (OIDC)
