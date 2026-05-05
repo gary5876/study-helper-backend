@@ -1,10 +1,17 @@
 # Study Helper — Backend API
 
-FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / Google Gemini)로 학습 콘텐츠(노트 · MCQ · 빈칸 채우기)를 생성합니다.
+FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT)로 학습 콘텐츠(노트 · MCQ · 빈칸 채우기)를 생성합니다.
 
 ---
 
-## 현재 상태 (2026-04-30)
+## 현재 상태 (2026-05-04)
+
+> **2026-05-04** — main 브랜치 AWS 배포 인프라 도입. EC2 (`study-helper-backend`,
+> EIP `54.116.95.144`) + ECR + SSM Parameter Store + GitHub Actions OIDC.
+> 시크릿은 GH Secrets → SSM Parameter Store (`/study-helper/backend/*`,
+> SecureString) → `deploy.sh` 가 부팅 시 fetch 해서 `.env.prod` 생성. 워크플로우
+> 는 `test → security → docker-build (PR) → build-and-push → sync-secrets →
+> deploy` 6 jobs 구조. 상세: `deploy/`.
 
 > **2026-04-30** — `chore/coderabbit-config` 브랜치에서 CodeRabbit 자동 코드
 > 리뷰 설정 도입. `.coderabbit.yaml` (한국어 리뷰, profile=chill, base=main/develop,
@@ -15,14 +22,12 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 ### 2026-04-15 완성 기능
 
 - [x] PDF 업로드 + pdfplumber 파싱 (최대 50페이지 / 20MB)
-- [x] **무료 플랜** — Google Gemini 2.0 Flash (키 풀 라운드로빈 + Retry-After 우선 읽기 + 키별 지수 백오프 + 전체 쿨다운 시 대기 후 재시도)
 - [x] **유료 플랜 (paid)** — Anthropic Claude Sonnet (서킷 브레이커 + 지수 백오프 재시도)
 - [x] **GPT 플랜 (gpt)** — OpenAI GPT-4o-mini / GPT-4o 등 (서킷 브레이커 + 재시도, JSON mode)
 - [x] **TimelyGPT 플랜 (timely)** — TimelyGPT (timelygpt.co.kr) API 키로 50+ 모델 선택 (토큰 캐싱 55분 + 서킷 브레이커 + 재시도)
 - [x] **모델 선택** — `GenerateOptions.model` 필드로 클라이언트가 원하는 모델 지정 가능 (없으면 서버 기본값 사용)
 - [x] **PDF 문제은행** — 업로드 시 SHA-256 해시 계산, PostgreSQL에 영구 저장, 동일 PDF 재업로드 시 LLM 호출 없이 즉시 반환
 - [x] 3단계 비동기 콘텐츠 생성 파이프라인 (Notes → MCQ 배치 → Fill 배치)
-- [x] Gemini MCQ/Fill 배치 분할 생성 (MCQ 5개/배치, Fill 8개/배치 — 토큰 한도 대응)
 - [x] **문제 레벨 1~5** — `difficulty: easy/medium/hard` 대신 정수 `level: 1~5` 체계. 레벨 정의: 1(기초암기)·2(개념이해)·3(시험최하)·4(표준시험)·5(고난도). 기존 저장 데이터 자동 변환 (easy→2, medium→3, hard→4)
 - [x] **문제 유형 분류** — `question_type: concept | application` (개념문제 / 실습문제). MCQ·Fill 모두 적용
 - [x] **생성 분포 상향** — L1:8% L2:12% L3:20% L4:35% L5:25% (기존 easy 30%/medium 50%/hard 20%에서 실전 시험 수준으로 상향)
@@ -34,7 +39,7 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 - [x] Rate Limiting (IP당 분당 30회)
 - [x] 구조화 JSON 로깅 + Prometheus 메트릭
 - [x] Docker / Docker Compose (PostgreSQL 서비스 포함)
-- [x] GitHub Actions CI/CD → AWS ECS 자동 배포
+- [x] GitHub Actions CI/CD → AWS EC2 (ECR + SSM Parameter Store) 자동 배포 ([deploy/](deploy/) 폴더)
 - [x] 단위 테스트 77개 (response_validator 26개 포함) + 통합 테스트 14개
 - [x] **Supabase RS256 토큰 JWKS 검증** (2026-04-14, `c0d73ac`) — `app/core/auth.py`에서 토큰 헤더 `alg`를 먼저 읽어 비대칭(RS/ES/PS)이면 `iss` 기반 JWKS 엔드포인트에서 공개키를 받아 `kid` 매칭 후 검증, HS256이면 기존 `SUPABASE_JWT_SECRET` 경로 유지. JWKS 1시간 캐시 + `kid` 미스 시 1회 재조회로 키 로테이션 대응. JWKS fetch 실패는 503으로 반환
 - [x] **세션 소유권 검증** (2026-04-14, `2dcb6ed`) — `/generate`·`/status`·`/result`·`/session` 전 엔드포인트에 `user_id` 기반 접근 제어
@@ -54,7 +59,6 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 ```
 POST /upload   → pdfplumber 파싱 → 세션 스토어 (Redis / 인메모리)
 POST /generate → plan 기반 분기 → 3단계 파이프라인 → 검증 → 세션 스토어
-                  ├─ free   → GeminiClient (키 풀, 배치 분할)
                   ├─ paid   → AnthropicClient (서킷 브레이커)
                   ├─ gpt    → OpenAIClient (서킷 브레이커, JSON mode)
                   └─ timely → TimelyClient (토큰 캐싱 + 서킷 브레이커)
@@ -83,7 +87,6 @@ app/
 │   ├── anthropic_client.py    # Claude API 래퍼 (재시도 + 서킷 브레이커)
 │   ├── openai_client.py       # OpenAI GPT API 래퍼 (재시도 + 서킷 브레이커)
 │   ├── timely_client.py       # TimelyGPT API 래퍼 (토큰 캐싱 + 재시도 + 서킷 브레이커)
-│   ├── llm_provider.py        # Gemini 키 풀 + 배치 생성 클라이언트
 │   ├── json_utils.py          # JSON 추출 + 부분 복구 공유 유틸리티
 │   ├── prompt_builder.py      # 프롬프트 템플릿 생성
 │   ├── response_validator.py  # LLM 출력 검증 + 정제
@@ -101,21 +104,18 @@ POST /generate 수신
   └─▶ 백그라운드 태스크 시작
         │
         ├─ [Stage 1] 학습 노트 생성 (progress 5% → 40%)
-        │    ├─ free:   GeminiClient.generate_notes() (4096 tokens)
         │    ├─ paid:   AnthropicClient.generate_with_retry() (4096 tokens)
         │    ├─ gpt:    OpenAIClient.generate_with_retry() (4096 tokens)
         │    └─ timely: TimelyClient.generate_with_retry() (4096 tokens)
         │    └─▶ validate_notes() → StudyNotes 객체 + notes_dict(concept_id 맵)
         │
         ├─ [Stage 2] MCQ 배치 생성 (progress 40% → 80%)
-        │    ├─ free:   GeminiClient.generate_mcq_batched() (5개/배치, 최대 4회 순차 호출)
         │    ├─ paid:   AnthropicClient.generate_with_retry() (8192 tokens, 1회)
         │    ├─ gpt:    OpenAIClient.generate_with_retry() (8192 tokens, 1회)
         │    └─ timely: TimelyClient.generate_with_retry() (8192 tokens, 1회)
         │    └─▶ validate_mcq() → 중복/환각 제거 후 MCQQuestion 목록
         │
         └─ [Stage 3] 빈칸 채우기 배치 생성 (progress 80% → 100%)
-             ├─ free:   GeminiClient.generate_fill_batched() (8개/배치, 최대 2회 순차 호출)
              ├─ paid:   AnthropicClient.generate_with_retry() (2048 tokens, 1회)
              ├─ gpt:    OpenAIClient.generate_with_retry() (2048 tokens, 1회)
              └─ timely: TimelyClient.generate_with_retry() (2048 tokens, 1회)
@@ -125,8 +125,6 @@ POST /generate 수신
 ```
 
 > **문제은행 캐시**: `/generate` 요청 시 `session.pdf_hash`로 `question_bank` 조회 → 히트 시 LLM 3단계 파이프라인 생략, 저장된 콘텐츠 즉시 반환. DB 연결 실패 시 기존 생성 플로우로 자동 폴백.
-
-> **Gemini 배치 중복 방지**: 각 배치 프롬프트에 이전 배치의 question/answer 텍스트를 주입해 중복을 1차 방지하고, validate_mcq의 Jaccard 70% 유사도 필터로 2차 제거합니다.
 
 ### 문제 수 자동 계산 (`calculate_question_counts`)
 
@@ -167,20 +165,15 @@ PDF 파일을 업로드합니다. 이후 `/generate` 호출에 사용할 `sessio
 
 **파라미터:**
 - `file` Form 필드: 업로드할 PDF 파일
-- `plan` Form 필드: `"free"` / `"paid"` / `"gpt"` / `"timely"` (기본값: `"paid"`)
-- `X-API-Key` 헤더 또는 `api_key` Form 필드: 유료 플랜만 필요
+- `plan` Form 필드: `"paid"` / `"gpt"` / `"timely"` (기본값: `"paid"`)
+- `X-API-Key` 헤더 또는 `api_key` Form 필드: 필수 (사용자가 직접 발급받은 키)
 
 ```bash
-# 유료 플랜
+# 유료 플랜 (Anthropic Claude)
 curl -X POST http://localhost:8000/upload \
   -H "X-API-Key: sk-ant-..." \
   -F "file=@document.pdf" \
   -F "plan=paid"
-
-# 무료 플랜 (API 키 불필요)
-curl -X POST http://localhost:8000/upload \
-  -F "file=@document.pdf" \
-  -F "plan=free"
 ```
 
 Response:
@@ -200,11 +193,10 @@ Response:
 
 **Request Body:**
 - `session_id` (필수): `/upload`에서 받은 세션 ID
-- `plan` (선택): `"free"` / `"paid"` / `"gpt"` / `"timely"` (기본값: `"paid"`)
+- `plan` (선택): `"paid"` / `"gpt"` / `"timely"` (기본값: `"paid"`)
 
 | plan | AI | API 키 |
 |------|----|--------|
-| `free` | Google Gemini 2.0 Flash | 불필요 |
 | `paid` | Anthropic Claude Sonnet | `sk-ant-...` |
 | `gpt` | OpenAI GPT-4o-mini | `sk-...` |
 | `timely` | TimelyGPT (50+ 모델) | timelygpt.co.kr 발급 키 |
@@ -212,15 +204,10 @@ Response:
 | 필드 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
 | `session_id` | string | 필수 | 업로드 세션 ID |
-| `plan` | string | `"paid"` | `free` / `paid` / `gpt` / `timely` |
+| `plan` | string | `"paid"` | `paid` / `gpt` / `timely` |
 | `lang` | string | `"ko"` | `ko` (한국어) / `en` (영어) — 생성 콘텐츠 언어 |
 
 ```bash
-# 무료 플랜 (API 키 불필요)
-curl -X POST http://localhost:8000/generate \
-  -H "Content-Type: application/json" \
-  -d '{"session_id": "uuid", "plan": "free", "lang": "ko"}'
-
 # Anthropic 유료 플랜
 curl -X POST http://localhost:8000/generate \
   -H "Content-Type: application/json" \
@@ -328,15 +315,20 @@ uvicorn app.main:app --reload
 
 **필수 환경변수 (.env)**
 ```
-# 무료 플랜 (Gemini)
-GEMINI_API_KEYS=키1,키2,키3
-
 # 문제은행 DB (docker-compose 사용 시 자동 설정됨)
 DATABASE_URL=postgresql://study@localhost:5432/studyhelper
 
 # Redis (docker-compose 사용 시 자동 설정됨)
 REDIS_URL=redis://localhost:6379
+
+# Supabase (인증 + 사용자 데이터 — 필수)
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+SUPABASE_JWT_SECRET=
+SUPABASE_DB_URL=
 ```
+
+LLM API 키 (`paid` / `gpt` / `timely`) 는 사용자가 요청 시점에 헤더로 직접 제공하므로 서버 환경변수에 둘 필요 없음.
 
 - API: `http://localhost:8000`
 - Swagger UI: `http://localhost:8000/docs`
@@ -353,28 +345,6 @@ REDIS_URL=redis://localhost:6379
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | 사용할 Claude 모델 |
 | `ANTHROPIC_TIMEOUT` | `30` | Anthropic API 타임아웃 (초) |
 | `MAX_RETRIES` | `2` | Anthropic API 재시도 횟수 |
-
-### Google Gemini (무료 플랜)
-
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| `GEMINI_API_KEYS` | *(필수)* | 쉼표 구분 Gemini API 키 목록 (`키1,키2,키3`) |
-| `GEMINI_MODEL` | `gemini-2.0-flash` | 사용할 Gemini 모델 |
-| `GEMINI_TIMEOUT` | `60` | Gemini API 타임아웃 (초) |
-
-#### Gemini Rate Limit 쿨다운 전략
-
-| 상수 | 값 | 설명 |
-|------|----|------|
-| `_COOLDOWN_BASE_SECONDS` | `15` | 첫 번째 rate-limit 쿨다운 |
-| `_COOLDOWN_MAX_SECONDS` | `60` | 키당 최대 쿨다운 (cap) |
-| `_COOLDOWN_MULTIPLIER` | `2` | 연속 hit마다 2배 (15 → 30 → 60) |
-| `_ALL_KEYS_MAX_WAIT` | `30` | 모든 키 쿨다운 시 최대 대기 시간 |
-
-- **Retry-After 우선**: 429 응답에 `retryDelay` 값이 있으면 그 값을 쿨다운에 사용
-- **키별 지수 백오프**: Retry-After 없으면 연속 hit 횟수에 따라 15s → 30s → 60s, 성공 시 리셋
-- **즉시 로테이션**: 한 키가 막히는 즉시 다음 키로 전환 (대기 없음)
-- **마지막 수단 대기**: 모든 키 쿨다운 시 가장 빨리 풀리는 키까지 대기 후 1회 재시도 (30초 초과 시 즉시 에러)
 
 ### 공통
 
@@ -428,7 +398,6 @@ pytest tests/integration/ -v
 - **CORS**: `ALLOWED_ORIGINS` 환경변수로 허용 출처 제한 (기본: localhost만)
 - **Rate Limiting**: IP당 분당 30회 (slowapi)
 - **API 키 (유료)**: 서버에 저장하지 않음 — `X-API-Key` 헤더로 전달 후 Anthropic에 포워딩
-- **Gemini 키 (무료)**: 서버 환경변수로만 관리, 클라이언트에 노출되지 않음
 - **서킷 브레이커**: 5회 연속 실패 시 60초 Anthropic API 차단
 - **비루트 컨테이너**: Dockerfile에서 `appuser`로 실행
 - **Redis TLS**: `REDIS_TLS_ENABLED=true`로 활성화 (`rediss://` URL 사용)
