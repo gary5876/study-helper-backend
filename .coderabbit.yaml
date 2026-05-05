@@ -1,0 +1,80 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: "ko-KR"
+tone_instructions: "한국어로, 단정적이지만 정중하게 리뷰. 보안·검증·세션·LLM 비용·예외 처리에 우선순위를 둔다. 사소한 스타일은 묶어서 1개 코멘트로."
+early_access: false
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "main"
+      - "develop"
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT REVIEW"
+
+  path_filters:
+    - "!**/*.lock"
+    - "!**/__pycache__/**"
+    - "!**/.pytest_cache/**"
+    - "!**/htmlcov/**"
+    - "!**/.coverage"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/.venv/**"
+    - "!**/venv/**"
+
+  path_instructions:
+    - path: "app/routers/**/*.py"
+      instructions: |
+        FastAPI 라우터. 다음을 중점 검토:
+        - 인증/인가: JWT 검증, 세션 소유권 확인 (user_id 일치)
+        - 입력 검증: Pydantic 모델, 파일 크기/타입 제한
+        - 예외 처리: HTTPException 사용, 내부 스택트레이스 노출 금지
+        - Rate limit (slowapi) 적용 여부
+        - 비동기 처리: async 누락, blocking I/O 호출
+    - path: "app/services/**/*.py"
+      instructions: |
+        도메인 서비스. 다음을 중점 검토:
+        - LLM 호출: 토큰 한도/비용, 재시도/타임아웃, 키 풀 cooldown
+        - 응답 파싱: JSON 견고성, 한글 토큰화 (`[a-zA-Z]{3,}|[가-힣]{2,}`),
+          중복 검사 임계 (Jaccard 0.60)
+        - PDF 파싱: 메모리/페이지 한도, 손상된 입력 처리
+        - 세션 영속화: user_sessions 상태 일관성
+    - path: "app/core/**/*.py"
+      instructions: |
+        설정/공통 유틸. 환경변수 누락 시 기본값과 예외 처리, 보안 헤더,
+        Supabase JWT(JWKS RS256) 검증 흐름을 점검.
+    - path: "migrations/**/*.sql"
+      instructions: |
+        Supabase 마이그레이션. RLS 정책, NOT NULL/CHECK 제약, idempotent
+        (IF NOT EXISTS), rollback 가능성을 검토.
+    - path: "tests/**/*.py"
+      instructions: |
+        pytest. 실제 동작 검증인지 확인 (단순 mock pass-through 지양),
+        한글 케이스 누락 여부, 보안/권한 분기 커버리지를 검토.
+
+  tools:
+    ruff:
+      enabled: true
+    markdownlint:
+      enabled: true
+    languagetool:
+      enabled: false
+    ast-grep:
+      essential_rules: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
