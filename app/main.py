@@ -1,13 +1,11 @@
 """FastAPI application entry point."""
 from __future__ import annotations
 
-import logging
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -30,6 +28,9 @@ from app.services.question_bank import init_question_bank, close_question_bank
 from app.services.user_store import init_user_store, close_user_store
 
 configure_logging()
+
+import logging
+from prometheus_fastapi_instrumentator import Instrumentator
 
 logger = logging.getLogger(__name__)
 settings = get_settings()

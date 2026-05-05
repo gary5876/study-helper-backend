@@ -39,9 +39,7 @@ def test_generation_error_default_status():
 
 def test_session_not_found_message():
     exc = SessionNotFoundError("abc-123")
-    # 보안: session_id를 클라이언트 메시지에 노출하지 않음. 서버 로깅용으로만 보존.
-    assert exc.message == "Session not found or expired"
-    assert exc._session_id == "abc-123"
+    assert "abc-123" in exc.message
 
 
 def test_validation_error():
@@ -102,8 +100,7 @@ def test_session_not_found_handler_response():
     assert res.status_code == 404
     body = res.json()
     assert body["error"] == "session_not_found"
-    # session_id 노출 금지 → 일반 메시지만 반환
-    assert body["message"] == "Session not found or expired"
+    assert "sess-999" in body["message"]
 
 
 def test_unhandled_exception_handler_response():

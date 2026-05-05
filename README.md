@@ -4,15 +4,9 @@ FastAPI 백엔드. PDF를 받아 AI(Anthropic Claude / OpenAI GPT / TimelyGPT / 
 
 ---
 
-## 현재 상태 (2026-04-30)
+## 현재 상태 (2026-04-15)
 
-> **2026-04-30** — `chore/coderabbit-config` 브랜치에서 CodeRabbit 자동 코드
-> 리뷰 설정 도입. `.coderabbit.yaml` (한국어 리뷰, profile=chill, base=main/develop,
-> `app/routers`·`app/services`·`app/core`·`migrations`·`tests` 별 path 지침,
-> `tools.ruff` 활성화). 머지 후 PR마다 보안·검증·LLM 비용·세션 일관성 1차
-> 검토 자동화. 상세: `../documents/record_progress/2026-04-30-01-coderabbit-도입.md`.
-
-### 2026-04-15 완성 기능
+### 완성된 기능
 
 - [x] PDF 업로드 + pdfplumber 파싱 (최대 50페이지 / 20MB)
 - [x] **무료 플랜** — Google Gemini 2.0 Flash (키 풀 라운드로빈 + Retry-After 우선 읽기 + 키별 지수 백오프 + 전체 쿨다운 시 대기 후 재시도)

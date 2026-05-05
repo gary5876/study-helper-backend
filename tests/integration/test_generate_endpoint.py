@@ -57,10 +57,7 @@ def test_generate_returns_processing(client):
 
 
 def test_generate_missing_session(client):
-    res = client.post(
-        "/generate",
-        json={"session_id": "00000000-0000-0000-0000-000000000000", "api_key": "sk-ant-test-key-12345"},
-    )
+    res = client.post("/generate", json={"session_id": "fake-id", "api_key": "sk-ant-test-key-12345"})
     assert res.status_code == 404
 
 

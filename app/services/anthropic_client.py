@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
-import time
-from typing import Callable
+from typing import Any, Callable
 
 import anthropic
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+    RetryError,
+)
 
 from app.core.config import get_settings
 from app.core.exceptions import GenerationError
@@ -16,11 +21,13 @@ from app.services.json_utils import extract_json
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-
 # ─────────────────────────────────────────
 # Circuit breaker state (in-process, per worker)
 # For multi-worker deployments use Redis-backed state instead.
 # ─────────────────────────────────────────
+import threading
+import time
+
 class _CircuitBreaker:
     """Simple half-open circuit breaker for the Anthropic API."""
 
