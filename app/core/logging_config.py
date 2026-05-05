@@ -24,7 +24,6 @@ class _JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         import json
-        import traceback
 
         payload: dict = {
             "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
