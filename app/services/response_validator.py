@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from collections import Counter
 
 from app.core.exceptions import ValidationError
 from app.models.schemas import (

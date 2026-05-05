@@ -18,9 +18,9 @@ def validate_api_key(key: str, plan: str) -> bool:
 
 
 def is_valid_uuid(value: str) -> bool:
-    """Check if string is a valid UUID. Returns False for None/non-str inputs."""
+    """Check if string is a valid UUID."""
     try:
         _uuid.UUID(value)
         return True
-    except (ValueError, AttributeError, TypeError):
+    except (ValueError, AttributeError):
         return False
