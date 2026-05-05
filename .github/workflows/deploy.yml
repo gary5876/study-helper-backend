@@ -142,7 +142,6 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
         run: |
           set -e
           put() {
@@ -165,7 +164,6 @@ jobs:
           put "/study-helper/backend/SUPABASE_SERVICE_ROLE_KEY" "$SUPABASE_SERVICE_ROLE_KEY"
           put "/study-helper/backend/SUPABASE_JWT_SECRET"       "$SUPABASE_JWT_SECRET"
           put "/study-helper/backend/SUPABASE_DB_URL"           "$SUPABASE_DB_URL"
-          put "/study-helper/backend/GEMINI_API_KEYS"           "$GEMINI_API_KEYS"
 
   # ──────────────────────────────────────────────
   deploy:
