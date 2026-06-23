@@ -16,13 +16,13 @@ permissions:
   contents: read
 
 env:
-  PROJECT_ID: vgc-ai-2026-gary
+  PROJECT_ID: study-helper-492805
   REGION: asia-northeast3
   SERVICE: study-helper-backend
   AR_REPO: study-helper
   # Workload Identity Federation provider + deploy service account
-  WIF_PROVIDER: projects/1082385690547/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-  DEPLOY_SA: gh-deploy@vgc-ai-2026-gary.iam.gserviceaccount.com
+  WIF_PROVIDER: projects/469469589402/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+  DEPLOY_SA: gh-deploy@study-helper-492805.iam.gserviceaccount.com
 
 jobs:
   deploy:
@@ -59,10 +59,8 @@ jobs:
             --allow-unauthenticated \
             --port 8080 \
             --set-env-vars "ENVIRONMENT=production" \
-            --update-secrets "DATABASE_URL=DATABASE_URL:latest" \
+            --update-secrets "DATABASE_URL=DATABASE_URL:latest,SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest,SUPABASE_JWT_SECRET=SUPABASE_JWT_SECRET:latest,SUPABASE_DB_URL=SUPABASE_DB_URL:latest" \
             --quiet
-          # Once the Supabase secrets exist in Secret Manager, extend the line above:
-          #   --update-secrets "DATABASE_URL=DATABASE_URL:latest,SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest,SUPABASE_JWT_SECRET=SUPABASE_JWT_SECRET:latest,SUPABASE_DB_URL=SUPABASE_DB_URL:latest"
 
       - name: Show service URL
         run: |
