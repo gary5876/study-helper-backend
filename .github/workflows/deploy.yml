@@ -1,9 +1,9 @@
-name: Backend Deploy
+name: Backend Deploy (AWS — DISABLED)
 
-# Triggers only on main push (CI checks live in ci.yml)
+# DISABLED 2026-06-23: AWS is no longer used (paid). Production deploys now go
+# to GCP Cloud Run via deploy-gcp.yml. This file is kept (manual-dispatch only)
+# in case AWS is ever revived; it will NOT run on main push.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
