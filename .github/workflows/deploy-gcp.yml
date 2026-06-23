@@ -1,0 +1,68 @@
+name: Backend Deploy (GCP Cloud Run)
+
+# Deploys main to Cloud Run. Auth via Workload Identity Federation (no keys).
+# Replaces the AWS deploy.yml path. CI checks live in ci.yml.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: backend-deploy-gcp-main
+  cancel-in-progress: true
+
+permissions:
+  id-token: write   # required for Workload Identity Federation
+  contents: read
+
+env:
+  PROJECT_ID: study-helper-492805
+  REGION: asia-northeast3
+  SERVICE: study-helper-backend
+  AR_REPO: study-helper
+  # Workload Identity Federation provider + deploy service account
+  WIF_PROVIDER: projects/469469589402/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+  DEPLOY_SA: gh-deploy@study-helper-492805.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    name: Build & Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build & push image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${SERVICE}:${GITHUB_SHA}"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "${SERVICE}" \
+            --image "${IMAGE}" \
+            --region "${REGION}" \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --set-env-vars "ENVIRONMENT=production" \
+            --update-secrets "DATABASE_URL=DATABASE_URL:latest,SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest,SUPABASE_JWT_SECRET=SUPABASE_JWT_SECRET:latest,SUPABASE_DB_URL=SUPABASE_DB_URL:latest" \
+            --quiet
+
+      - name: Show service URL
+        run: |
+          gcloud run services describe "${SERVICE}" --region "${REGION}" \
+            --format="value(status.url)"
