@@ -25,3 +25,7 @@ asyncpg==0.29.0
 pytest==8.2.0
 pytest-asyncio==0.23.7
 pytest-cov==5.0.0
+# MLOps — Question Quality Classifier (ml/)
+mlflow==3.12.0
+pandas==2.2.2
+joblib==1.4.2

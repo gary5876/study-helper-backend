@@ -33,3 +33,9 @@ build/
 # SSH/AWS keys
 *.pem
 *.ppk
+
+# MLOps local artifacts (Question Quality Classifier)
+ml/mlflow.db
+ml/mlruns/
+ml/data/
+mlruns/
