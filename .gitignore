@@ -19,6 +19,7 @@ htmlcov/
 .env
 .env.local
 .env.*.local
+.env.prod
 
 # IDE
 .vscode/
@@ -28,3 +29,7 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# SSH/AWS keys
+*.pem
+*.ppk
